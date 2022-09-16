@@ -20,10 +20,10 @@ from io import StringIO
 
 import azure.functions as func
 
-aad_application_id = os.environ.get('AADAppId')
-aad_application_Secret = os.environ.get('AADAppSecret')
-azure_monitor_dcr_immutableid = os.environ.get('DcrImmutableId')
-azure_monitor_dce_uri = os.environ.get('DceUri')
+aad_application_id = os.environ.get('AADApplicationId')
+aad_application_Secret = os.environ.get('AADApplicationSecret')
+azure_monitor_dcr_immutableid = os.environ.get('AzureMonitorDcrImmutableId')
+azure_monitor_dce_uri = os.environ.get('AzureMonitorDceUri')
 azure_tenant_id = os.environ.get('AzureTenantId')
 
 
