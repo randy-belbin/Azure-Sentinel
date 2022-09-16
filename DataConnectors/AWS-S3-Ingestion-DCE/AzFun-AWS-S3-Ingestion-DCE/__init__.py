@@ -14,31 +14,26 @@ import hashlib
 import hmac
 import base64
 import re
+import urllib.parse
 from threading import Thread
 from io import StringIO
 
 import azure.functions as func
 
+aad_application_id = os.environ.get('AADAppId')
+aad_application_Secret = os.environ.get('AADAppSecret')
+azure_monitor_dcr_immutableid = os.environ.get('DcrImmutableId')
+azure_monitor_dce_uri = os.environ.get('DceUri')
+azure_tenant_id = os.environ.get('AzureTenantId')
 
-sentinel_customer_id = os.environ.get('WorkspaceID')
-sentinel_shared_key = os.environ.get('WorkspaceKey')
+
 aws_access_key_id = os.environ.get('AWSAccessKeyId')
 aws_secret_acces_key = os.environ.get('AWSSecretAccessKey')
 aws_s3_bucket = os.environ.get('S3Bucket')
 aws_region_name = os.environ.get('AWSRegionName')
 s3_folder = os.environ.get('S3Folder')
-sentinel_log_type = os.environ.get('LogAnalyticsCustomLogName')
+sentinel_log_type = os.environ.get('AWSLogsTableName')
 fresh_event_timestamp = os.environ.get('FreshEventTimeStamp')
-
-logAnalyticsUri = os.environ.get('LAURI')
-
-if ((logAnalyticsUri in (None, '') or str(logAnalyticsUri).isspace())):    
-    logAnalyticsUri = 'https://' + sentinel_customer_id + '.ods.opinsights.azure.com'
-
-pattern = r'https:\/\/([\w\-]+)\.ods\.opinsights\.azure.([a-zA-Z\.]+)$'
-match = re.match(pattern,str(logAnalyticsUri))
-if(not match):
-    raise Exception("Invalid Log Analytics Uri.")
 
 # Boolean Values
 isCoreFieldsAllTable = os.environ.get('CoreFieldsAllTable')
@@ -77,7 +72,7 @@ def main(mytimer: func.TimerRequest) -> None:
     t0 = time.time()    
     logging.info('Total number of files is {}'.format(len(coreEvents)))                                                                       
     for event in coreEvents:
-        sentinel = AzureSentinelConnector(logAnalyticsUri, sentinel_customer_id, sentinel_shared_key, sentinel_log_type, queue_size=10000, bulks_number=10)
+        sentinel = AzureSentinelConnector(aad_application_id, aad_application_Secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, sentinel_log_type, queue_size=10000, bulks_number=10)
         with sentinel:
             sentinel.send(event)
         file_events += 1 
@@ -480,10 +475,12 @@ class S3Client:
 
 
 class AzureSentinelConnector:
-    def __init__(self, log_analytics_uri, customer_id, shared_key, log_type, queue_size=200, bulks_number=10, queue_size_bytes=25 * (2**20)):
-        self.log_analytics_uri = log_analytics_uri
-        self.customer_id = customer_id
-        self.shared_key = shared_key
+    def __init__(self, aad_application_id, aad_application_secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, log_type, queue_size=200, bulks_number=10, queue_size_bytes=25 * (2**20)):
+        self.aad_application_id = aad_application_id
+        self.aad_application_secret = aad_application_secret
+        self.azure_tenant_id = azure_tenant_id
+        self.azure_monitor_dce_uri = azure_monitor_dce_uri
+        self.azure_monitor_dcr_immutableid = azure_monitor_dcr_immutableid
         self.log_type = log_type
         self.queue_size = queue_size
         self.bulks_number = bulks_number
@@ -514,7 +511,7 @@ class AzureSentinelConnector:
             if queue:
                 queue_list = self._split_big_request(queue)
                 for q in queue_list:
-                    jobs.append(Thread(target=self._post_data, args=(self.customer_id, self.shared_key, q, self.log_type, )))
+                    jobs.append(Thread(target=self._post_data, args=(self.aad_application_id, self.aad_application_secret, self.azure_tenant_id, self.azure_monitor_dce_uri, self.azure_monitor_dcr_immutableid, q, self.log_type, )))
 
         for job in jobs:
             job.start()
@@ -529,38 +526,30 @@ class AzureSentinelConnector:
 
     def __exit__(self, type, value, traceback):
         self.flush()
+       
+    def _get_oauthtoken(self, app_id, app_secret, tenant_id):
+        oauth_uri = "https://login.microsoftonline.com/"+ tenant_id +"/oauth2/v2.0/token"
+        oauth_scope = urllib.parse.quote_plus("https://monitor.azure.com//.default")
+        oauth_body = "client_id=" + app_id + "&scope=" + oauth_scope + "&client_secret=" + app_secret + "&grant_type=client_credentials"
+        oauth_headers = {
+                    'content-type': "application/x-www-form-urlencoded"            
+                }
+        oauth_response = requests.post(oauth_uri, data=oauth_body, headers=oauth_headers)
+        oauth_response_json = json.loads(oauth_response.content)
+        return oauth_response_json["access_token"]
 
-    def _build_signature(self, customer_id, shared_key, date, content_length, method, content_type, resource):
-        x_headers = 'x-ms-date:' + date
-        string_to_hash = method + "\n" + str(content_length) + "\n" + content_type + "\n" + x_headers + "\n" + resource
-        bytes_to_hash = bytes(string_to_hash, encoding="utf-8")  
-        decoded_key = base64.b64decode(shared_key)
-        encoded_hash = base64.b64encode(hmac.new(decoded_key, bytes_to_hash, digestmod=hashlib.sha256).digest()).decode()
-        authorization = "SharedKey {}:{}".format(customer_id, encoded_hash)
-        return authorization
 
-    def _post_data(self, customer_id, shared_key, body, log_type):
+    def _post_data(self, app_id, app_secret, tenant_id, dce_uri, dcr_immutableid, body, log_type):
         events_number = len(body)
         body = json.dumps(body)
-        body = re.sub(r'\\', '', body)
-        body = re.sub(r'"{', '{', body)
-        body = re.sub(r'}"', '}', body)
-        method = 'POST'
-        content_type = 'application/json'
-        resource = '/api/logs'
-        rfc1123date = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-        content_length = len(body)
-        signature = self._build_signature(customer_id, shared_key, rfc1123date, content_length, method, content_type, resource)
-        uri = self.log_analytics_uri + resource + '?api-version=2016-04-01'
+        oauth_token = self._get_oauthtoken(app_id, app_secret, tenant_id)
         
         headers = {
-            'content-type': content_type,
-            'Authorization': signature,
-            'Log-Type': log_type,
-            'x-ms-date': rfc1123date
+            'content-type': "application/json",
+            'Authorization': "Bearer " +oauth_token
         }
-
-        response = requests.post(uri, data=body, headers=headers)
+        ingestion_endpoint = dce_uri + "/dataCollectionRules/" + dcr_immutableid + "/streams/" +log_type+ "?api-version=2021-11-01-preview"
+        response = requests.post(ingestion_endpoint, data=body, headers=headers)
         if (response.status_code >= 200 and response.status_code <= 299):
             logging.info('{} events have been successfully sent to Azure Sentinel'.format(events_number))
             self.successfull_sent_events_number += events_number
