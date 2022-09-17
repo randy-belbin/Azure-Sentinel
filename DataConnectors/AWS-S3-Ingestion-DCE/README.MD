@@ -35,8 +35,8 @@ Azure Sentinel Data connector to ingest AWS S3 Files using Azure Monitor DCE. Th
 ## Installation / Setup Guide
 
 1. Click  "Deploy To Azure" (For both Commercial & Azure GOV)  
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FAzure%2FAzure-Sentinel%2Fmaster%2FDataConnectors%2FAWS-S3-AzureFunction%2Fazuredeploy_awss3.json)
-[![Deploy to Azure Gov](https://aka.ms/deploytoazuregovbutton)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FAzure%2FAzure-Sentinel%2Fmaster%2FDataConnectors%2FAWS-S3-AzureFunction%2Fazuredeploy_awss3.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsreedharande%2FAzure-Sentinel%2FAWS-DCE%2FDataConnectors%2FAWS-S3-Ingestion-DCE%2Fazuredeploy_aws_s3_dce.json)
+[![Deploy to Azure Gov](https://aka.ms/deploytoazuregovbutton)](https://portal.azure.us/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsreedharande%2FAzure-Sentinel%2FAWS-DCE%2FDataConnectors%2FAWS-S3-Ingestion-DCE%2Fazuredeploy_aws_s3_dce.json)
 
 2. Select the preferred **Subscription**, **Resource Group** and **Location**  
    **Note**  
