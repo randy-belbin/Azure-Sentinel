@@ -1,4 +1,4 @@
-# Azure Sentinel Data connector to ingest AWS S3 Files
+# Azure Sentinel Data connector to ingest AWS S3 Files using Azure Monitor Data Collection Endpoint
 **Author: Sreedhar Ande**  
 
 Azure Sentinel Data connector to ingest AWS S3 Files using Azure Monitor DCE. This Data connector currently support the following file types from AWS S3  
