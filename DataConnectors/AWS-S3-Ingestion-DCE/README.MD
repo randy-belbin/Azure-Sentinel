@@ -1,7 +1,7 @@
 # Azure Sentinel Data connector to ingest AWS S3 Files
 **Author: Sreedhar Ande**  
 
-Azure Sentinel Data connector to ingest AWS S3 Files using Azure Function App. This Data connector currently support the following file types from AWS S3  
+Azure Sentinel Data connector to ingest AWS S3 Files using Azure Monitor DCE. This Data connector currently support the following file types from AWS S3  
 
  - .json.gz    
  - .jsonl.gz  
@@ -13,7 +13,24 @@ Azure Sentinel Data connector to ingest AWS S3 Files using Azure Function App. T
 **.json.gz/.jsonl.gz/.json/.csv.gz/.log.gz --> AWS S3 --> Azure Function --> Azure Log Analytics**  
 ![AWS-S3-Ingestion.png](./Images/AWS-S3-Ingestion.png)  
 
-**Ingesting AWS GuardDuty Findings steps are [here](https://www.linkedin.com/pulse/ingesting-aws-guard-duty-findings-azure-sentinel-marko-lauren/?trackingId=JATgHPaTpKHk07Z5%2BHhnFw%3D%3D)**    
+## Pre-requisites  
+1.	Register an Azure Active Directory application to authenticate against the API  
+	https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs#configure-application  
+	
+2. Create Data Collection Endpoint (DCE) on Azure Monitor  
+	https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs#create-data-collection-endpoint  
+	
+3. Create Customlog Table
+	https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs#add-custom-log-table  
+	
+4. Create Data Collection Rule (DCR)  
+   https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs-api#create-data-collection-rule
+
+5. Collect DCR-ImmutableId  
+	https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs#collect-information-from-dcr  
+	
+6. Assign Permissions to Data Collection Rule(DCR)  
+	https://docs.microsoft.com/azure/azure-monitor/logs/tutorial-custom-logs-api#assign-permissions-to-dcr  
 
 ## Installation / Setup Guide
 
@@ -27,16 +44,19 @@ Azure Sentinel Data connector to ingest AWS S3 Files using Azure Function App. T
    Group
 3. Enter the following value in the ARM template deployment
 	```	
-	"Workspace Id": Azure Log Analytics Workspace Id​
-	"Workspace Key": Azure Log Analytics Workspace Key
-	"AWS Access Key Id": AWS Access Key
+	"Azure Tenant Id": Azure Tenant Id​
+	"AAD Application Id": AAD Application Id
+	"AAD Application Secret": AAD Application Secret
+	"Azure Monitor Dce Uri": Azure Monitor Data Collection end point
+	"Azure Monitor Dcr Immutable Id": Azure Monitor Dcr Immutable Id
+	"AWS Access ID": AWS Access Key
 	"AWS Secret Key ID": AWS Secret Key
-	"AWS Region Name" : AWS SecurityHub Region
+	"AWS Region Name" : AWS Region
 	"S3 Bucket": AWS S3 Bucket URI  
 	  - Ex: s3://<<S3 Bucket Name>>/AWSLogs/
 	"S3FolderName" : Folder Name in AWS Account folder in S3
 	  - Ex: CloudTrail/GuardDuty/SecurityHub/DNSLogs  
-	"CustomLogTableName": Azure Log Analytics Custom Log Table Name		
+	"AWS Logs Table Name": Azure Log Analytics Custom Log Table Name		
 	```
 
 ## Post Deployment Steps
@@ -58,7 +78,7 @@ Azure Sentinel Data connector to ingest AWS S3 Files using Azure Function App. T
    FreshEventTimeStamp=10    
    Schedule=0 */10 * * * *  
       
-4. AWSAccessKey, AWSSecretAccessKey and Workspace Key will be placed as "Secrets" in the Azure KeyVault `<<functionappname>><<uniqueid>>` with only Azure Function access policy. If you want to see/update these secrets,
+4. AWSAccessKey, AWSSecretAccessKey will be placed as "Secrets" in the Azure KeyVault `<<functionappname>><<uniqueid>>` with only Azure Function access policy. If you want to see/update these secrets,
 
 	```
 		a. Go to Azure KeyVault "<<functionappname>><<uniqueid>>"
