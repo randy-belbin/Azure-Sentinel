@@ -25,6 +25,7 @@ aad_application_Secret = os.environ.get('AADApplicationSecret')
 azure_monitor_dcr_immutableid = os.environ.get('AzureMonitorDcrImmutableId')
 azure_monitor_dce_uri = os.environ.get('AzureMonitorDceUri')
 azure_tenant_id = os.environ.get('AzureTenantId')
+ingestion_endpoint_version = os.environ.get('APIVersion')
 
 
 aws_access_key_id = os.environ.get('AWSAccessKeyId')
@@ -72,7 +73,7 @@ def main(mytimer: func.TimerRequest) -> None:
     t0 = time.time()    
     logging.info('Total number of files is {}'.format(len(coreEvents)))                                                                       
     for event in coreEvents:
-        sentinel = AzureSentinelConnector(aad_application_id, aad_application_Secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, sentinel_log_type, queue_size=10000, bulks_number=10)
+        sentinel = AzureSentinelConnector(aad_application_id, aad_application_Secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, sentinel_log_type, ingestion_endpoint_version, queue_size=10000, bulks_number=10)
         with sentinel:
             sentinel.send(event)
         file_events += 1 
@@ -475,13 +476,19 @@ class S3Client:
 
 
 class AzureSentinelConnector:
-    def __init__(self, aad_application_id, aad_application_secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, log_type, queue_size=200, bulks_number=10, queue_size_bytes=25 * (2**20)):
+    authorizationHeader = ""
+    lastUpdated = ""
+    token_url_template = "https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token"
+    payload_template = 'grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope=https%3A%2F%2Fmonitor.azure.com%2F%2F.default&Authority=https%3A%2F%2Flogin.microsoftonline.com%2F{tenant_id}'
+    
+    def __init__(self, aad_application_id, aad_application_secret, azure_tenant_id, azure_monitor_dce_uri, azure_monitor_dcr_immutableid, log_type, ingestion_endpoint_version, queue_size=200, bulks_number=10, queue_size_bytes=25 * (2**20)):
         self.aad_application_id = aad_application_id
         self.aad_application_secret = aad_application_secret
         self.azure_tenant_id = azure_tenant_id
         self.azure_monitor_dce_uri = azure_monitor_dce_uri
         self.azure_monitor_dcr_immutableid = azure_monitor_dcr_immutableid
         self.log_type = log_type
+        self.ingestion_endpoint_version = ingestion_endpoint_version
         self.queue_size = queue_size
         self.bulks_number = bulks_number
         self.queue_size_bytes = queue_size_bytes
@@ -511,7 +518,7 @@ class AzureSentinelConnector:
             if queue:
                 queue_list = self._split_big_request(queue)
                 for q in queue_list:
-                    jobs.append(Thread(target=self._post_data, args=(self.aad_application_id, self.aad_application_secret, self.azure_tenant_id, self.azure_monitor_dce_uri, self.azure_monitor_dcr_immutableid, q, self.log_type, )))
+                    jobs.append(Thread(target=self._post_data, args=(q)))
 
         for job in jobs:
             job.start()
@@ -526,30 +533,37 @@ class AzureSentinelConnector:
 
     def __exit__(self, type, value, traceback):
         self.flush()
-       
-    def _get_oauthtoken(self, app_id, app_secret, tenant_id):
-        oauth_uri = "https://login.microsoftonline.com/"+ tenant_id +"/oauth2/v2.0/token"
-        oauth_scope = urllib.parse.quote_plus("https://monitor.azure.com//.default")
-        oauth_body = "client_id=" + app_id + "&scope=" + oauth_scope + "&client_secret=" + app_secret + "&grant_type=client_credentials"
-        oauth_headers = {
-                    'content-type': "application/x-www-form-urlencoded"            
-                }
-        oauth_response = requests.post(oauth_uri, data=oauth_body, headers=oauth_headers)
-        oauth_response_json = json.loads(oauth_response.content)
-        return oauth_response_json["access_token"]
+            
+    def _get_oauthtoken(self):
+        if not self.authorizationHeader or datetime.datetime.now() - datetime.timedelta(minutes=5) > self.lastUpdated:            
+            paylod = self.payload_template.format(
+                client_id=self.aad_application_id, client_secret=self.aad_application_secret, tenant_id=self.azure_tenant_id)
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            response = requests.request("POST", self.token_url_template.format(
+                tenantId=self.azure_tenant_id), headers=headers, data=paylod, timeout=20)
+            data = json.loads(response.text)
+            accessToken = data["access_token"]
+            self.authorizationHeader = "Bearer {}".format(accessToken)
+            self.lastUpdated = datetime.datetime.now()
+        return self.authorizationHeader
 
 
-    def _post_data(self, app_id, app_secret, tenant_id, dce_uri, dcr_immutableid, body, log_type):
-        events_number = len(body)
-        body = json.dumps(body)
-        oauth_token = self._get_oauthtoken(app_id, app_secret, tenant_id)
+    def _post_data(self, log_data):                
+        "Post Log Data to Azure Data Collector API - Custom Log V2"
+        authorizationHeader = self._get_oauthtoken()
         
+        events_number = len(log_data)
+        body = json.dumps(log_data)
+                
         headers = {
             'content-type': "application/json",
-            'Authorization': "Bearer " +oauth_token
+            'Authorization': authorizationHeader
         }
-        ingestion_endpoint = dce_uri + "/dataCollectionRules/" + dcr_immutableid + "/streams/" +log_type+ "?api-version=2021-11-01-preview"
-        response = requests.post(ingestion_endpoint, data=body, headers=headers)
+        ingestion_endpoint = self.azure_monitor_dce_uri + "/dataCollectionRules/" + self.azure_monitor_dcr_immutableid + "/streams/" +self.log_type+ "?api-version="+self.ingestion_endpoint_version
+        response = requests.request("POST", ingestion_endpoint, headers=headers, data=body)
+        print(response.status_code)
         if (response.status_code >= 200 and response.status_code <= 299):
             logging.info('{} events have been successfully sent to Azure Sentinel'.format(events_number))
             self.successfull_sent_events_number += events_number
