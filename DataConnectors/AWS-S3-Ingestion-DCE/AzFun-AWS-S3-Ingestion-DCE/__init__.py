@@ -1,6 +1,5 @@
 import requests
 import datetime
-import dateutil
 import logging
 import boto3
 import gzip
@@ -8,13 +7,7 @@ import io
 import csv
 import time
 import os
-import sys
 import json
-import hashlib
-import hmac
-import base64
-import re
-import urllib.parse
 from threading import Thread
 from io import StringIO
 
