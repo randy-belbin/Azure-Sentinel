@@ -38,6 +38,12 @@
 			"metadata": {
 				"description": "Specifies the Azure Monitor Data Collection Immutable Id"
 			}
+        },
+		"AzureMonitorApiVersion": {
+            "type": "string",            
+			"metadata": {
+				"description": "Specifies the Azure Monitor Data Collection EndPoint API Version"
+			}
         },		
         "AWSAccessKeyId": {
             "type": "string",            
@@ -229,7 +235,8 @@
 						"AADApplicationSecret": "[parameters('AADApplicationSecret')]",
 						"AzureTenantId": "[parameters('AzureTenantId')]",
 						"AzureMonitorDceUri": "[parameters('AzureMonitorDceUri')]",
-						"AzureMonitorDcrImmutableId": "[parameters('AzureMonitorDcrImmutableId')]",                        
+						"AzureMonitorDcrImmutableId": "[parameters('AzureMonitorDcrImmutableId')]",
+						"APIVersion":"[parameters('AzureMonitorApiVersion')]",
                         "AWSAccessKeyId": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('AWSAccessKeyId')).secretUriWithVersion, ')')]",
                         "AWSSecretAccessKey": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('AWSSecretAccessKey')).secretUriWithVersion, ')')]",
                         "AWSRegionName": "[parameters('AWSRegionName')]",
