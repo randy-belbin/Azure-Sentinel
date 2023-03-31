@@ -21,7 +21,7 @@
 
     
     .NOTES
-        AUTHOR: Sreedhar Ande
+        AUTHOR: Sreedhar Ande, Snow Kang
         LASTEDIT: 18 Jan 2023
 
     .EXAMPLE
@@ -31,11 +31,32 @@
 #region UserInputs
 
 param(
-    [parameter(Mandatory = $true, HelpMessage = "Enter your Tenant Id")] [string] $TenantID    
+    [parameter(Mandatory = $true, HelpMessage = "Enter Tenant Id")] [string] $TenantID,
+	[parameter(Mandatory = $true, HelpMessage = "Enter Subscription Id")] [string] $SubscriptionId,
+	[parameter(Mandatory = $true, HelpMessage = "Enter Log Analytics Workspace Name")] [string] $LogAnalyticsWorkspaceName,
+	[parameter(Mandatory = $true, HelpMessage = "Enter Log Analytics Resource Group")] [string] $LogAnalyticsResourceGroup,	
+	[Parameter(Mandatory = $true, HelpMessage = "Enter file path for External Table Schema")]
+        [ValidateScript({
+            if( -Not ($_ | Test-Path) ){
+                throw "File or folder does not exist"
+            }
+            return $true
+        })]
+        [string]$ExternalTableSchemaFile,
+	
+	[parameter(Mandatory = $true, HelpMessage = "Enter Storage Account Name")] [string] $StorageAccountName,
+	[parameter(Mandatory = $true, HelpMessage = "Enter Storage Account Resource Group Name")] [string] $StorageAccountResourceGroupName,
+	[parameter(Mandatory = $true, HelpMessage = "Enter Storage Account Container Name")] [string] $StorageContainerName
+	
+	#[parameter(Mandatory = $true, HelpMessage = "Enter External Table Partition Name")] [string] $PartitionName,
+	#[parameter(Mandatory = $true, HelpMessage = "Enter External Table Source Column Name")] [string] $SourceColumn,
+	#[parameter(Mandatory = $true, HelpMessage = "Enter External Table Transform Criteria")] [string] $TransformCriteria,
+	#[parameter(Mandatory = $true, HelpMessage = "Enter External Table Path Format")] [string] $PathFormat
+        # parameter External table name
 ) 
 
 #endregion UserInputs
-      
+
 #region HelperFunctions
 
 function Write-Log {
@@ -162,106 +183,41 @@ function Get-RequiredModules {
 
 #region MainFunctions
 
-function Get-LATables {	
-	
-	$TablesArray = New-Object System.Collections.Generic.List[System.Object]
-	
-	try {       
-        Write-Log -Message "Retrieving tables from $LogAnalyticsWorkspaceName" -LogFileName $LogFileName -Severity Information
-        $WSTables = Get-AllTables       
-        $TablesArray = $WSTables | Sort-Object -Property TableName | Select-Object -Property TableName, IngestionPlan  | Out-GridView -Title "Select Table (For Multi-Select use CTRL)" -PassThru            
-    }
-    catch {
-        Write-Log -Message $_ -LogFileName $LogFileName -Severity Error
-        Write-Log -Message "An error occurred in querying table names from $LogAnalyticsWorkspaceName" -LogFileName $LogFileName -Severity Error         
-        exit
-    }
-	
-	return $TablesArray	
-}
-
-function Get-AllTables {	
-    	
-	$AllTables = @()	
-    $TablesApi = $APIEndpoint + "subscriptions/$SubscriptionId/resourcegroups/$LogAnalyticsResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName/tables" + "?api-version=2022-09-01-privatepreview"								
-	    		
-    try {        
-        $TablesApiResult = Invoke-RestMethod -Uri $TablesApi -Method "GET" -Headers $LaAPIHeaders           			
-    } 
-    catch {                    
-        Write-Log -Message "Get-AllTables $($_)" -LogFileName $LogFileName -Severity Error		                
-    }
-
-    If ($TablesApiResult.StatusCode -ne 200) {
-        $searchPattern = '(_RST|_SRCH|_EXT)'                
-        foreach ($ta in $TablesApiResult.value) { 
-            try {
-                if($ta.name.Trim() -notmatch $searchPattern) {                    
-                    $AllTables += [pscustomobject]@{
-						TableName=$ta.name.Trim();
-						IngestionPlan=$ta.properties.Plan.Trim();                                
-                    }  
-                }
-            }
-            catch {
-                Write-Log -Message "Error adding $ta to collection" -LogFileName $LogFileName -Severity Error
-            }
-            	
-        }
-    }
-	
-    return $AllTables
-}
-
 function Update-SystemAssignedIdentity {
-
-    $IdentityEndPoint = $APIEndpoint + "subscriptions/$SubscriptionId/resourceGroups/$LogAnalyticsResourceGroup/providers/microsoft.operationalinsights/workspaces/$LogAnalyticsWorkspaceName" + "?api-version=2022-10-01"
-    $IdentityBody = @"
-                    {
-                        "location": "$LogAnalyticsLocation",
-                        "identity": {
-                            "type": "SystemAssigned"
-                        },
-                        "properties": {
-                            "sku": {
-                                "name": "pergb2018"
-                            }
-                        }
-                    }
-"@
     try {        
-        Invoke-RestMethod -Uri $IdentityEndPoint -Method "PUT" -Headers $LaAPIHeaders -Body $IdentityBody
+        $MSIStatus = Set-AzResource -ResourceId $workspaceClient.ResourceId -Properties @{identity = @{type="SystemAssigned"}} -Force
         Write-Log -Message "Successfully updated MSI" -LogFileName $LogFileName -Severity Information
+        return $MSIStatus.Identity.principalId
     } 
     catch {        
-        Write-Log -Message "An error occurred in updating Workspace to use system assigned MSI" -LogFileName $LogFileName -Severity Error            
-        Write-Log -Message $($_.Exception.Response.StatusCode.value__) -LogFileName $LogFileName -Severity Error                            
-        Write-Log -Message $($_.Exception.Response.StatusDescription) -LogFileName $LogFileName -Severity Error
-    } 
-
+        Write-Log -Message "An error occurred in updating Workspace to use system assigned MSI" -LogFileName $LogFileName -Severity Error        
+    }    
 }
 
 function Create-ExternalTables {
 	[CmdletBinding()]
-    param (  
-        [parameter(Mandatory = $true)] $StorageContainerClient,      
-        [parameter(Mandatory = $true)] $SelectedBlobs,
+    param (    
         [parameter(Mandatory = $true)] $StgAccountName,
         [parameter(Mandatory = $true)] $StgContainerName
 	)
-    	
-	foreach($SelectedBlob in $SelectedBlobs) {
-        $source_blob_client = $StorageContainerClient.CloudBlobContainer.GetBlockBlobReference($SelectedBlob.Name)
-
-        #download the blob as text into memory
-        $download_file = $source_blob_client.DownloadText()
-        $TableSchemaJson = FixJsonIndentation -jsonOutput $download_file        
-        $ExternalTableName = "$($SelectedBlob.Name.subString(0, $SelectedBlob.Name.lastIndexOf('.')))_EXT"
+    if ((Get-Item $ExternalTableSchemaFile) -is [system.io.fileinfo]) {        
+		$extn = [IO.Path]::GetExtension($ExternalTableSchemaFile)
+		if ($extn -ieq ".csv") {
+			$json_records = Get-Content $dataset | ConvertFrom-Csv | ConvertTo-Json
+			$json_payload= $json_records | Convertfrom-json | ConvertTo-Json
+		}
+		else {
+			$json_records = Get-Content $ExternalTableSchemaFile
+			$json_payload= $json_records | Convertfrom-json | ConvertTo-Json
+		}  	
+	
+        $TableSchemaJson = FixJsonIndentation -jsonOutput $json_payload        
+        $ExternalTableName = "ZPADemo_EXT"
         $TablesApi = $APIEndpoint + "subscriptions/$SubscriptionId/resourcegroups/$LogAnalyticsResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$LogAnalyticsWorkspaceName/tables/$ExternalTableName" + "?api-version=2022-09-01-privatepreview"								
         $PartitionName = "DayBin"
         $SourceColumn = "TimeGenerated"
         $TransformCriteria = "bin1d"
-        $PathFormat = "datetime_pattern('{yyyy}-{MM}-{dd}', $PartitionName)"
+        $PathFormat = "datetime_pattern('{yyyy}-{MM}-{dd}',$PartitionName)"
 
 		$ExternalTableBody = @"
         {
@@ -294,15 +250,17 @@ function Create-ExternalTables {
         }
 "@
         try {        
-            $ExternalTableApiResult = Invoke-WebRequest -Uri $TablesApi -Method "PUT" -Headers $LaAPIHeaders -Body $ExternalTableBody			
-            Write-Log -Message "External Table $($ExternalTableName) Status $($ExternalTableApiResult.StatusCode)" -LogFileName $LogFileName -Severity Information
+            Invoke-WebRequest -Uri $TablesApi -Method "PUT" -Headers $LaAPIHeaders -Body $ExternalTableBody			
+            Start-Sleep -Seconds 10
+            
+            $ExternalTableApiResult = Invoke-WebRequest -Uri $TablesApi -Method "GET" -Headers $LaAPIHeaders
         } 
         catch {                    
             Write-Log -Message "Create-ExternalTables $($_)" -LogFileName $LogFileName -Severity Error		                
         }
 
-    } #forloop closing
-    return $ExternalTableApiResult
+    } #If closing
+    return $ExternalTableApiResult.StatusCode
 }
 
 Function FixJsonIndentation ($jsonOutput) {
@@ -349,9 +307,42 @@ Function FixJsonIndentation ($jsonOutput) {
         Write-Log -Message "Error occured in FixJsonIndentation :$($_)" -LogFileName $LogFileName -Severity Error
     }
 }
+
+Function Get-TableSchema ($filePath) {
+	$all_datasets = @()
+	foreach ($file in $filePath){
+		if ((Get-Item $file) -is [system.io.fileinfo]){
+			$all_datasets += (Resolve-Path -Path $file)
+		}
+		elseif ((Get-Item $file) -is [System.IO.DirectoryInfo]){
+			$folderfiles = Get-ChildItem -Path $file -Recurse -Include *.json,*.csv
+			$all_datasets += $folderfiles
+		}
+	}
+    return $all_datasets
+}
+
+Function Grant-WorkspaceStorageBlobDataReaderRole ($LogAnalyticsIdentity) {
+    try {               
+        New-AzRoleAssignment -ObjectId $LogAnalyticsIdentity -RoleDefinitionName "Storage Blob Data Reader" -Scope $StorageAccountResourceId -Force
+        Write-Log -Message "Successfully assigned Storage Blob Data Reader role to $LogAnalyticsWorkspaceName"
+    }
+    catch {
+        Write-Log -Message "An error occurred in assigning Storage Blob Data Reader role to $LogAnalyticsWorkspaceName" -LogFileName $LogFileName -Severity Error
+    }
+}
+
+
 #endregion
 
 #region DriverProgram
+
+# Check Powershell version, needs to be 5 or higher
+if ($host.Version.Major -lt 5) {
+    Write-Log "Supported PowerShell version for this script is 5 or above" -LogFileName $LogFileName -Severity Error    
+    exit
+}
+
 $AzModulesQuestion = "Do you want to update required Az Modules to latest version?"
 $AzModulesQuestionChoices = New-Object Collections.ObjectModel.Collection[Management.Automation.Host.ChoiceDescription]
 $AzModulesQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&Yes'))
@@ -369,14 +360,8 @@ else {
 Get-RequiredModules("Az.Accounts")
 Get-RequiredModules("Az.OperationalInsights")
 
-$TimeStamp = Get-Date -Format yyyyMMdd_HHmmss 
+ 
 $LogFileName = '{0}_{1}.csv' -f "ADLS_Search", $TimeStamp
-
-# Check Powershell version, needs to be 5 or higher
-if ($host.Version.Major -lt 5) {
-    Write-Log "Supported PowerShell version for this script is 5 or above" -LogFileName $LogFileName -Severity Error    
-    exit
-}
 
 #disconnect exiting connections and clearing contexts.
 Write-Log "Clearing existing Azure connection" -LogFileName $LogFileName -Severity Information
@@ -388,12 +373,10 @@ Write-Log "Clearing existing Azure context `n" -LogFileName $LogFileName -Severi
 get-azcontext -ListAvailable | ForEach-Object{$_ | remove-azcontext -Force -Verbose | Out-Null} #remove all connected content
     
 Write-Log "Clearing of existing connection and context completed." -LogFileName $LogFileName -Severity Information
+
 Try {
     #Connect to tenant with context name and save it to variable
-    $MyContext = Connect-AzAccount -Tenant $TenantID -ContextName 'MyAzContext' -Force -ErrorAction Stop
-        
-    #Select subscription to build
-    $CurrentSubscription = Get-AzSubscription -TenantId $TenantID | Where-Object {($_.state -eq 'enabled') } | Out-GridView -Title "Select Subscription to Use" -OutputMode Single      
+    $MyContext = Connect-AzAccount -Tenant $TenantID -ContextName 'MyAzContext' -Force -ErrorAction Stop        
 }
 catch {    
     Write-Log "Error When trying to connect to tenant : $($_)" -LogFileName $LogFileName -Severity Error
@@ -404,67 +387,64 @@ $AzureAccessToken = (Get-AzAccessToken).Token
 $LaAPIHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
 $LaAPIHeaders.Add("Content-Type", "application/json")
 $LaAPIHeaders.Add("Authorization", "Bearer $AzureAccessToken")
-
-
-
 $APIEndpoint = $MyContext.Context.Environment.ResourceManagerUrl
 
-Try 
-    {
-        #Set context for subscription being built
-        $null = Set-AzContext -Subscription $CurrentSubscription.id
-        $SubscriptionId = $CurrentSubscription.id
-        Write-Log "Working in Subscription: $($CurrentSubscription.Name)" -LogFileName $LogFileName -Severity Information
+Try {
+    $workspaceClient = Get-AzOperationalInsightsWorkspace -Name $LogAnalyticsWorkspaceName -ResourceGroupName $LogAnalyticsResourceGroup
+    $LogAnalyticsWorkspaceId = $workspaceClient.CustomerId
+    $LogAnalyticsLocation = $workspaceClient.Location
+}
+Catch {
+    Write-Log -Message "Error in retreiving Log Analytics Workspace" -LogFileName $LogFileName -Severity Error
+}
 
-        $SelectedLAW = Get-AzOperationalInsightsWorkspace | Where-Object { $_.ProvisioningState -eq "Succeeded" } | Select-Object -Property Name, ResourceGroupName, Location, CustomerId | Out-GridView -Title "Select Log Analytics workspace" -OutputMode Single
-        if($null -eq $SelectedLAW) {
-            Write-Log "No Log Analytics workspace found..." -LogFileName $LogFileName -Severity Error 
-        }
-        else {
-            Write-Log "Listing Log Analytics workspace" -LogFileName $LogFileName -Severity Information
-                
-            $LogAnalyticsWorkspaceName = $SelectedLAW.Name
-            $LogAnalyticsWorkspaceId = $SelectedLAW.CustomerId
-            $LogAnalyticsResourceGroup = $SelectedLAW.ResourceGroupName
-            $LogAnalyticsLocation = $SelectedLAW.Location
+Try {
+    $storageClient = Get-AzStorageAccount -ResourceGroupName $StorageAccountResourceGroupName -Name $StorageAccountName
+    $StorageAccountResourceId = $storageClient.Id
+}
+Catch {
+    Write-Log -Message "Error in retreiving Storage Account Context" -LogFileName $LogFileName -Severity Error
+}
 
-            #region Update Workspace to Use System Assigned Identity
+Try {      
+    #region Update Workspace to Use System Assigned Identity
+    $IdentityQuestion = "Do you want to update Workspace to Use System Assigned Identity for Log Analytics workspace: $($LogAnalyticsWorkspaceName)"
+    $IdentityQuestionChoices = New-Object Collections.ObjectModel.Collection[Management.Automation.Host.ChoiceDescription]
+    $IdentityQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&Yes'))
+    $IdentityQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&No'))
+    
+    $IdentityQuestionDecision = $Host.UI.PromptForChoice($title, $IdentityQuestion, $IdentityQuestionChoices, 1)
 
-            $IdentityQuestion = "Do you want to update Workspace to Use System Assigned Identity for Log Analytics workspace: $($LogAnalyticsWorkspaceName)"
-            $IdentityQuestionChoices = New-Object Collections.ObjectModel.Collection[Management.Automation.Host.ChoiceDescription]
-            $IdentityQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&Yes'))
-            $IdentityQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&No'))
-
-            $IdentityQuestionDecision = $Host.UI.PromptForChoice($title, $IdentityQuestion, $IdentityQuestionChoices, 1)
-
-            If ($IdentityQuestionDecision -eq 0) {
-                $MSIStatus = Update-SystemAssignedIdentity
-                If ($MSIStatus.StatusCode -eq 200) {
-                    Write-Log -Message "Workspace updated to use system assigned MSI" -LogFileName $LogFileName -Severity Information
-                } else {
-                    Write-Log -Message "Error in updating Workspace to use system assigned MSI" -LogFileName $LogFileName -Severity Error
-                }
-            }
-
-            #endregion
-            #$SelectedTables = Get-LATables
-            $StorageAccount = Get-AzResource -ResourceType 'Microsoft.Storage/storageAccounts'| Out-GridView -Title "Select ADLS Account" -OutputMode Single
-            $StorageAccountKey = (Get-AzStorageAccountKey -ResourceGroupName $StorageAccount.ResourceGroupName -Name $StorageAccount.Name).Value[0]
-            $StorageContext = New-AzStorageContext -StorageAccountName $StorageAccount.Name -StorageAccountKey $StorageAccountKey
-            $StorageContainer = Get-AzStorageContainer -Context $StorageContext | Out-GridView -Title "Select Container" -OutputMode Single
-            # Get all the blobs from the container
-            $StorageContainerBlobs = Get-AzStorageBlob -Container $StorageContainer.Name -Context $StorageContext | Out-GridView -Title "Select Blob" -OutputMode Multiple
-
-            #New-AzRoleAssignment -ObjectId $LogAnalyticsWorkspaceId -RoleDefinitionName "Storage Blob Data Reader" -ResourceGroupName $StorageAccount.ResourceGroupName -Scope $StorageAccount.ResourceId
-            
-
-            $ExternalTablesStatus = Create-ExternalTables -StorageContainerClient $StorageContainer -SelectedBlobs $StorageContainerBlobs -StgAccountName $StorageAccount.Name -StgContainer $StorageContainer.Name
-                         
-
-        } 	
+    If ($IdentityQuestionDecision -eq 0) {
+        $LogAnalyticsSystemAssigned = Update-SystemAssignedIdentity
     }
-    catch [Exception]
-    { 
-        Write-Log -Message $_ -LogFileName $LogFileName -Severity Error                         		
+    #endregion
+
+    #region Storage Account Blob Reader Permissions
+    $StorageAcctPermQuestion = "Do you want to grant Workspace to Storage Blob Data Reader: $($LogAnalyticsWorkspaceName)"
+    $StorageAcctPermQuestionChoices = New-Object Collections.ObjectModel.Collection[Management.Automation.Host.ChoiceDescription]
+    $StorageAcctPermQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&Yes'))
+    $StorageAcctPermQuestionChoices.Add((New-Object Management.Automation.Host.ChoiceDescription -ArgumentList '&No'))
+    
+    $StorageAcctPermQuestionDecision = $Host.UI.PromptForChoice($title, $StorageAcctPermQuestion, $StorageAcctPermQuestionChoices, 1)
+
+    If ($StorageAcctPermQuestionDecision -eq 0) {
+        Grant-WorkspaceStorageBlobDataReaderRole -LogAnalyticsIdentity $LogAnalyticsSystemAssigned
     }
-#endregion DriverProgram 
+
+    #endregion
+
+    $ExternalTablesStatus = Create-ExternalTables -StgAccountName $StorageAccountName -StgContainer $StorageContainerName
+	
+    if($ExternalTablesStatus -eq 200) {
+        Write-Log -Message "External Table $ExternalTableName created successfully" -LogFileName $LogFileName -Severity Information
+    } else {
+        Write-Log -Message "Error occured in creating external table - $ExternalTableName" -LogFileName $LogFileName -Severity Information
+    }
+
+} 	
+catch [Exception]
+{ 
+    Write-Log -Message $_ -LogFileName $LogFileName -Severity Error                         		
+}
+#endregion DriverProgram
