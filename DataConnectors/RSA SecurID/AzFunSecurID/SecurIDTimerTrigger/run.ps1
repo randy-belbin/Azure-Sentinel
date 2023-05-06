@@ -238,12 +238,15 @@ function UpdateCheckpointTime($CheckpointFile, $LastSuccessfulTime){
 function Get-RSASecurIDEvent {
     $RSAKeyJson = Read-PrivateCerti
     $EventStartTime = GetStartTime -CheckpointFile $CheckPointFile
+    $EventStartTime = $EventStartTime.replace('+', '%2B')
     # Format Endpoint Admin/User
     If ($RSA_Log_Type.ToLower() -eq "admin") {
-        $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/adminlog/exportlogs?startTimeAfter=$($EventStartTime)"        
+        $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/adminlog/exportlogs?startTimeAfter=$($EventStartTime)"  
+        Write-Host $RSA_API_End_Point  
     } 
     elseif ($RSA_Log_Type.ToLower() -eq "user") {
         $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/usereventlog/exportlogs?startTimeAfter=$($EventStartTime)"        
+        Write-Host $RSA_API_End_Point
     }
     # Call the Endpoint
     try {	        
@@ -288,7 +291,9 @@ function Get-RSASecurIDEvent {
         } While ($iterations -le $apiResponse.totalPages )
 
         $endTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
-        Write-Host "SUCCESS: $($apiResponse.totalElements) records found between $EventStartTime and $endTime and posted to Log Analytics" -ForegroundColor Green
+        if ($responseCode -eq 200) {
+            Write-Host "SUCCESS: $($apiResponse.totalElements) records found between $EventStartTime and $endTime and posted to Log Analytics" -ForegroundColor Green
+        }
         UpdateCheckpointTime -CheckpointFile $checkPointFile -LastSuccessfulTime $endTime
 
         Remove-Item $RSACredentialsPath -Force
