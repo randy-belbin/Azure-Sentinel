@@ -129,6 +129,7 @@ Function Get-SignedJWTToken {
 
 # Function to POST the data payload to a Log Analytics workspace
 function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
+    Write-Host "Post-LogAnalyticsData"
     $method="POST"
     $contentType = "application/json"
     $resource = "/api/logs"
@@ -157,7 +158,7 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
     $tempdata = @()
     $tempDataSize = 0
     
-    if ((($body |  Convertto-json -depth 20).Length) -gt 25MB) {        
+    if (($body.Length) -gt 25MB) {        
 		Write-Host "Upload is over 25MB, needs to be split"									 
         foreach ($record in $body) {            
             $tempdata += $record
@@ -171,8 +172,7 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
             }
         }
         Write-Host "Sending left over data = $Tempdatasize"
-        $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
-        
+        $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders        
     }
     Else {        
         $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
@@ -183,6 +183,7 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
 
 # Function to build the authorization signature to post to Log Analytics
 Function Build-Signature ($customerId, $sharedKey, $date, $contentLength, $method, $contentType, $resource) {
+    Write-Host "Build-Signature"
     $xHeaders = "x-ms-date:" + $date
     $stringToHash = $method + "`n" + $contentLength + "`n" + $contentType + "`n" + $xHeaders + "`n" + $resource
     $bytesToHash = [Text.Encoding]::UTF8.GetBytes($stringToHash)
@@ -262,7 +263,7 @@ function Get-RSASecurIDEvent {
                 Write-Output "Calling RSA API"
                 $apiResponse = Invoke-RestMethod -Uri $RSA_API_End_Point -Method 'GET' -Headers $RSAAPIHeaders
                 if ($($apiResponse.totalElements) -gt 0) {                
-                    $responseCode = Post-LogAnalyticsData -customerId $workspaceId -sharedKey $workspaceKey -body $apiResponse.elements -logType $RSA_LogA_Table
+                    $responseCode = Post-LogAnalyticsData -customerId $workspaceId -sharedKey $workspaceKey -body $($apiResponse.elements) -logType $RSA_LogA_Table
                 
                     if ($responseCode -ne 200){
                         Write-Error -Message "ERROR: Log Analytics POST, Status Code: $responseCode, unsuccessful."
