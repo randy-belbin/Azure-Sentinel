@@ -32,7 +32,7 @@ The APIs mentioned above will retrieve records from the point where the previous
 	
 ## Post Deployment Steps  
 1. **Important**  
-   **After successful deployment, Navigate to Resource Group and search for storage account, named - `<<FunctionAppName>><<uniqueid>>` and upload previously saved file **"RSA_Credentials.key"** to "RSASecurID" container**  
+   **After successful deployment, Navigate to Resource Group and search for storage account, named - `<<FunctionAppName>><<uniqueid>>` and upload previously saved file **"RSA_Credentials.key"** to "rsasecurid" container**  
 
 2. Workspace Key will be placed as "Secrets" in the Azure KeyVault `<<FunctionAppName>><<uniqueid>>` with only Azure Function access policy. If you want to see/update these secrets,  
 

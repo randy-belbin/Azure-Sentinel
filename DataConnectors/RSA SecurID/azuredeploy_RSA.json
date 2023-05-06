@@ -49,7 +49,7 @@
 	"StorageAccountName":"[concat(substring(variables('FunctionName'), 0, 20), 'sa')]",    
 	"KeyVaultName": "[concat(substring(variables('FunctionName'), 0, 20), 'kv')]",    
     "LogAnalyticsWorkspaceKey": "LogAnalyticsWorkspaceKey",
-    "StorageContainerName": "RSASecurID",
+    "StorageContainerName": "rsasecurid",
 	"StorageSuffix":"[environment().suffixes.storage]",
     "LogAnaltyicsUri":"[replace(environment().portal, 'https://portal', concat('https://', toLower(parameters('WorkspaceId')), '.ods.opinsights'))]"
   },
