@@ -19,7 +19,7 @@ The APIs mentioned above will retrieve records from the point where the previous
 
 ## Configuration Steps to Deploy Function App  
 1. Click on Deploy to Azure (For both Commercial & Azure GOV)  
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://aka.ms/sentinel-docusignconnector-azuredeploy)  
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fsreedharande%2FAzure-Sentinel%2FRSA-Connector%2FDataConnectors%2FRSA%2520SecurID%2Fazuredeploy_RSA.json)  
   
 
 2. Select the preferred **Subscription**, **Resource Group** and **Location**  

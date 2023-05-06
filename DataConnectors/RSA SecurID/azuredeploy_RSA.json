@@ -3,57 +3,53 @@
   "contentVersion": "1.0.0.0",
   "parameters": {
     "FunctionName": {
-      "defaultValue": "DocuSign",
+      "defaultValue": "RSASecurID",
       "type": "string",
       "metadata": {
         "description": "Specifies the name of the Function App."
       }
-    },
-    "DocuSignIntegrationKey": {
-      "defaultValue": "Enter the DocuSign Integration Key",
-      "type": "string",
-      "metadata": {
-        "description": "Specifies DocuSign Integration Key."
-      }
-    },
-	"DocuSignAdminUserGUID": {
-      "defaultValue": "Enter the DocuSign Admin User GUID",
-      "type": "string",
-      "metadata": {
-        "description": "Specifies DocuSign Admin User GUID"
-      }
-    },
-	"DocuSignAccountAPIID": {
-      "defaultValue": "Enter the DocuSign Account ID",
-      "type": "string",
-      "metadata": {
-        "description": "Specifies DocuSign Account ID"
-      }
-    },
+    },    
     "WorkspaceId": {
-      "type": "string",
-      "defaultValue": "<WorkspaceId>",
+      "type": "string",      
       "metadata": {
         "description": "Specifies the Azure Log Analytics Workspace Id."
       }
     },
     "WorkspaceKey": {
-      "type": "string",
-      "defaultValue": "<WorkspaceKey>",
+      "type": "string",      
       "metadata": {
         "description": "Specifies the Azure Log Analytics Workspace Key."
       }
-    }	
+    },
+	"FirstStartTimeRecord": {
+      "type": "string", 	   
+      "metadata": {
+        "description": "Enter value in Date format mm/dd/yyyy"
+      }
+    },
+	"RSALogtype": {
+      "type": "string",      
+      "allowedValues": [
+            "Admin",
+			"User"
+        ],
+        "metadata": {
+            "description": "Select the Log type you want to ingest."
+        }
+    },
+	"LogAnalyticsTableName": {
+      "type": "string", 	   
+      "metadata": {
+        "description": "Enter LA Table Name"
+      }
+    }
   },
   "variables": {
     "FunctionName": "[concat(toLower(parameters('FunctionName')), uniqueString(resourceGroup().id), uniqueString(subscription().id))]",
 	"StorageAccountName":"[concat(substring(variables('FunctionName'), 0, 20), 'sa')]",    
-	"KeyVaultName": "[concat(substring(variables('FunctionName'), 0, 20), 'kv')]",
-    "DocuSignIntegrationKey": "DocuSignIntegrationKey",
-	"DocuSignAdminUserGUID" : "DocuSignAdminUserGUID",
-	"DocuSignAccountAPIID" : "DocuSignAccountAPIID",
+	"KeyVaultName": "[concat(substring(variables('FunctionName'), 0, 20), 'kv')]",    
     "LogAnalyticsWorkspaceKey": "LogAnalyticsWorkspaceKey",
-    "StorageContainerName": "docusign-monitor",
+    "StorageContainerName": "RSASecurID",
 	"StorageSuffix":"[environment().suffixes.storage]",
     "LogAnaltyicsUri":"[replace(environment().portal, 'https://portal', concat('https://', toLower(parameters('WorkspaceId')), '.ods.opinsights'))]"
   },
@@ -191,11 +187,8 @@
           "name": "appsettings",		  
           "dependsOn": [
             "[concat('Microsoft.Web/sites/', variables('FunctionName'))]",
-            "[resourceId('Microsoft.KeyVault/vaults/', variables('KeyVaultName'))]",
-            "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('KeyVaultName'), variables('DocuSignIntegrationKey'))]",            
-			"[resourceId('Microsoft.KeyVault/vaults/secrets', variables('KeyVaultName'), variables('DocuSignAdminUserGUID'))]",            
-			"[resourceId('Microsoft.KeyVault/vaults/secrets', variables('KeyVaultName'), variables('DocuSignAccountAPIID'))]",            
-            "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('KeyVaultName'), variables('LogAnalyticsWorkspaceKey'))]"
+            "[resourceId('Microsoft.KeyVault/vaults/', variables('KeyVaultName'))]",            
+			"[resourceId('Microsoft.KeyVault/vaults/secrets', variables('KeyVaultName'), variables('LogAnalyticsWorkspaceKey'))]"
           ],
           "properties": {
             "FUNCTIONS_EXTENSION_VERSION": "~3",
@@ -205,19 +198,15 @@
             "AzureWebJobsStorage": "[concat('DefaultEndpointsProtocol=https;AccountName=', toLower(variables('StorageAccountName')),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', toLower(variables('StorageAccountName'))), '2019-06-01').keys[0].value, ';EndpointSuffix=',toLower(variables('StorageSuffix')))]",
             "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING": "[concat('DefaultEndpointsProtocol=https;AccountName=', toLower(variables('StorageAccountName')),';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', toLower(variables('StorageAccountName'))), '2019-06-01').keys[0].value, ';EndpointSuffix=',toLower(variables('StorageSuffix')))]",
             "WEBSITE_CONTENTSHARE": "[toLower(variables('FunctionName'))]",
-            "DocuSignIntegrationKey": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('DocuSignIntegrationKey')).secretUriWithVersion, ')')]",
-			"DocuSignAdminUserGUID": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('DocuSignAdminUserGUID')).secretUriWithVersion, ')')]",
-			"DocuSignAccountAPIID": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('DocuSignAccountAPIID')).secretUriWithVersion, ')')]",            
             "WorkspaceId": "[parameters('WorkspaceId')]",
             "WorkspaceKey": "[concat('@Microsoft.KeyVault(SecretUri=', reference(variables('LogAnalyticsWorkspaceKey')).secretUriWithVersion, ')')]",
+			"firstStartTimeRecord": "[parameters('FirstStartTimeRecord')]",
+			"LogType": "[parameters('RSALogtype')]",
+			"LATableName": "[parameters('LogAnalyticsTableName')]",
 			"Schedule": "0 */10 * * * *",
-			"LATableDSMAPI": "DocuSignSecurityEvents",
-			"LATableDSUsers": "DocuSignUsers",
-			"DocuSignEnvironment": "Developer",
-			"NeedDocuSignUsers":"True",
-			"LAURI": "[variables('LogAnaltyicsUri')]",
-			"DocuSignUserInfoBaseURI" : "https://demo.docusign.net",
-            "WEBSITE_RUN_FROM_PACKAGE": "https://github.com/Azure/Azure-Sentinel/blob/master/DataConnectors/DocuSign-SecurityEvents/AzureFunctionDocuSignMonitor/DocuSignMonitorTimerTrigger.zip?raw=true"
+			"EventTimeInterval": "10",
+			"LAURI": "[variables('LogAnaltyicsUri')]",			
+            "WEBSITE_RUN_FROM_PACKAGE": "https://github.com/sreedharande/Azure-Sentinel/blob/RSA-Connector/DataConnectors/RSA%20SecurID/AzFunSecurID/SecurIDTimerTrigger.zip?raw=true"
           }
         }
       ]      
@@ -252,52 +241,7 @@
         "enabledForTemplateDeployment": true,
         "enableSoftDelete": true
       },
-      "resources": [
-        {
-          "type": "secrets",
-          "apiVersion": "2016-10-01",
-          "name": "[variables('DocuSignIntegrationKey')]",
-          "dependsOn": [
-            "[resourceId('Microsoft.KeyVault/vaults/', variables('KeyVaultName'))]"
-          ],
-          "properties": {
-            "value": "[parameters('DocuSignIntegrationKey')]",
-            "contentType": "string",
-            "attributes": {
-              "enabled": true
-            }
-          }
-        },
-		{
-          "type": "secrets",
-          "apiVersion": "2016-10-01",
-          "name": "[variables('DocuSignAdminUserGUID')]",
-          "dependsOn": [
-            "[resourceId('Microsoft.KeyVault/vaults/', variables('KeyVaultName'))]"
-          ],
-          "properties": {
-            "value": "[parameters('DocuSignAdminUserGUID')]",
-            "contentType": "string",
-            "attributes": {
-              "enabled": true
-            }
-          }
-        },
-		{
-          "type": "secrets",
-          "apiVersion": "2016-10-01",
-          "name": "[variables('DocuSignAccountAPIID')]",
-          "dependsOn": [
-            "[resourceId('Microsoft.KeyVault/vaults/', variables('KeyVaultName'))]"
-          ],
-          "properties": {
-            "value": "[parameters('DocuSignAccountAPIID')]",
-            "contentType": "string",
-            "attributes": {
-              "enabled": true
-            }
-          }
-        },   
+      "resources": [        		
         {
           "type": "secrets",
           "apiVersion": "2016-10-01",
