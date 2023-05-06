@@ -58,7 +58,7 @@ Function Read-PrivateCerti {
     $storageAccountContext = New-AzStorageContext -ConnectionString $AzureWebJobsStorage
     $checkBlob = Get-AzStorageBlob -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext
     if($null -ne $checkBlob){
-        Get-AzStorageBlobContent -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext -Destination $RSAPrivateKeyToSignPath -Force    
+        Get-AzStorageBlobContent -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext -Destination $RSACredentialsPath -Force    
         #Read SecurID API Key file
         $RSAKeyJson = Get-Content $RSACredentialsPath -Raw | ConvertFrom-Json
         Set-Content -Path $RSAPrivateKeyToSignPath -Value $RSAKeyJson.accessKey
