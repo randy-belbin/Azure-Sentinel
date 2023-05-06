@@ -35,7 +35,7 @@ $RSA_Log_Type = $env:LogType
 $logAnalyticsUri = $env:LAURI
 $RSA_LogA_Table = $env:LATableName
 $EventTimeInterval = $env:EventTimeInterval
-$storageAccountContainer = "RSASecurID"
+$storageAccountContainer = "rsasecurid"
 
 $AzFunDrive = (Get-Location).Drive.Root
 $CheckpointFile = "$($AzFunDrive)home\site\RSACheckpoint.csv"
