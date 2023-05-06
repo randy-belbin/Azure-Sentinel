@@ -40,7 +40,8 @@ $storageAccountContainer = "rsasecurid"
 $AzFunDrive = (Get-Location).Drive.Root
 $CheckpointFile = "$($AzFunDrive)home\site\RSACheckpoint.csv"
 $RSACredentialsPath = "$($AzFunDrive)home\site\RSA_Credentials.key"
-$CheckpointFile = "$($AzFunDrive)home\site\RSACheckpoint.csv"
+$RSAPrivateKeyToSignPath = "$($AzFunDrive)home\site\RSA_PrivateKey.key"
+
 
 
 if($logAnalyticsUri.Trim() -notmatch 'https:\/\/([\w\-]+)\.ods\.opinsights\.azure.([a-zA-Z\.]+)$')
