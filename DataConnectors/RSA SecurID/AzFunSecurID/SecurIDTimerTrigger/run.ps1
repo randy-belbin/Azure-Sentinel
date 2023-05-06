@@ -129,76 +129,85 @@ Function Get-SignedJWTToken {
 
 # Function to POST the data payload to a Log Analytics workspace
 function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
-    Write-Host "Post-LogAnalyticsData"
-    $method="POST"
-    $contentType = "application/json"
-    $resource = "/api/logs"
-    $rfc1123date = [DateTime]::UtcNow.ToString("r")
-    $logAnalyticsUri = $logAnalyticsUri + $resource + "?api-version=2016-04-01"
-    $body = $body | ConvertTo-Json
-    $contentLength = $body.Length
-    $signature = Build-Signature `
-        -customerId $customerId `
-        -sharedKey $sharedKey `
-        -date $rfc1123date `
-        -contentLength $contentLength `
-        -method $method `
-        -contentType $contentType `
-        -resource $resource
+    try {
+        Write-Host "Post-LogAnalyticsData"
+        $method="POST"
+        $contentType = "application/json"
+        $resource = "/api/logs"
+        $rfc1123date = [DateTime]::UtcNow.ToString("r")
+        $logAnalyticsUri = $logAnalyticsUri + $resource + "?api-version=2016-04-01"
+        $body = $body | ConvertTo-Json
+        $contentLength = $body.Length
+        $signature = Build-Signature `
+            -customerId $customerId `
+            -sharedKey $sharedKey `
+            -date $rfc1123date `
+            -contentLength $contentLength `
+            -method $method `
+            -contentType $contentType `
+            -resource $resource
 
-    
-    $LAheaders = @{
-        "Authorization" = $signature;
-        "Log-Type" = $logType;
-        "x-ms-date" = $rfc1123date;
-        "time-generated-field" = $TimeStampField
-    }
-    
-    #Test Size; Log A limit is 30MB
-    $tempdata = @()
-    $tempDataSize = 0
-    
-    if (($body.Length) -gt 25MB) {        
-		Write-Host "Upload is over 25MB, needs to be split"									 
-        foreach ($record in $body) {            
-            $tempdata += $record
-            $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
-            if ($tempDataSize -gt 25MB) {                
-                $response = Invoke-WebRequest -Body $tempdata -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
-                write-Host "Sending data = $TempDataSize"
-                $tempdata = $null
-                $tempdata = @()
-                $tempDataSize = 0
-            }
+        
+        $LAheaders = @{
+            "Authorization" = $signature;
+            "Log-Type" = $logType;
+            "x-ms-date" = $rfc1123date;
+            "time-generated-field" = $TimeStampField
         }
-        Write-Host "Sending left over data = $Tempdatasize"
-        $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders        
+        
+        #Test Size; Log A limit is 30MB
+        $tempdata = @()
+        $tempDataSize = 0
+        
+        if (($body.Length) -gt 25MB) {        
+            Write-Host "Upload is over 25MB, needs to be split"									 
+            foreach ($record in $body) {            
+                $tempdata += $record
+                $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
+                if ($tempDataSize -gt 25MB) {                
+                    $response = Invoke-WebRequest -Body $tempdata -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
+                    write-Host "Sending data = $TempDataSize"
+                    $tempdata = $null
+                    $tempdata = @()
+                    $tempDataSize = 0
+                }
+            }
+            Write-Host "Sending left over data = $Tempdatasize"
+            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders        
+        }
+        Else {        
+            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
+        }
+        
+        return $response.StatusCode
     }
-    Else {        
-        $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $LAheaders
+    catch {
+        Write-Error "An error occurred: $($_.Exception.Message)"
     }
-    
-    return $response.StatusCode
 }
 
 # Function to build the authorization signature to post to Log Analytics
 Function Build-Signature ($customerId, $sharedKey, $date, $contentLength, $method, $contentType, $resource) {
-    Write-Host "Build-Signature"
-    $xHeaders = "x-ms-date:" + $date
-    $stringToHash = $method + "`n" + $contentLength + "`n" + $contentType + "`n" + $xHeaders + "`n" + $resource
-    $bytesToHash = [Text.Encoding]::UTF8.GetBytes($stringToHash)
-    $keyBytes = [Convert]::FromBase64String($sharedKey)
-    $sha256 = New-Object System.Security.Cryptography.HMACSHA256
-    $sha256.Key = $keyBytes
-    $calculatedHash = $sha256.ComputeHash($bytesToHash)
-    $encodedHash = [Convert]::ToBase64String($calculatedHash)
-    $authorization = 'SharedKey {0}:{1}' -f $customerId,$encodedHash
-    return $authorization
+    try {
+        Write-Host "Build-Signature"
+        $xHeaders = "x-ms-date:" + $date
+        $stringToHash = $method + "`n" + $contentLength + "`n" + $contentType + "`n" + $xHeaders + "`n" + $resource
+        $bytesToHash = [Text.Encoding]::UTF8.GetBytes($stringToHash)
+        $keyBytes = [Convert]::FromBase64String($sharedKey)
+        $sha256 = New-Object System.Security.Cryptography.HMACSHA256
+        $sha256.Key = $keyBytes
+        $calculatedHash = $sha256.ComputeHash($bytesToHash)
+        $encodedHash = [Convert]::ToBase64String($calculatedHash)
+        $authorization = 'SharedKey {0}:{1}' -f $customerId,$encodedHash
+        return $authorization
+    } 
+    catch {
+        Write-Error "An error occurred: $($_.Exception.Message)"
+    }
 }
 
 # Function to retrieve the checkpoint start time of the last successful API call for a given logtype. Checkpoint file will be created if none exists
-function GetStartTime($CheckpointFile) {   
-
+function GetStartTime($CheckpointFile) {
     if ([System.IO.File]::Exists($CheckpointFile) -eq $false) {        
         if ($null -eq $firstStartTimeRecord) {
             $firstStartTimeRecord = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
@@ -262,6 +271,7 @@ function Get-RSASecurIDEvent {
                 $apiResponse = $null			
                 Write-Output "Calling RSA API"
                 $apiResponse = Invoke-RestMethod -Uri $RSA_API_End_Point -Method 'GET' -Headers $RSAAPIHeaders
+                Write-Host "$($apiResponse.elements).Length"
                 if ($($apiResponse.totalElements) -gt 0) {                
                     $responseCode = Post-LogAnalyticsData -customerId $workspaceId -sharedKey $workspaceKey -body $($apiResponse.elements) -logType $RSA_LogA_Table
                 
@@ -281,13 +291,13 @@ function Get-RSASecurIDEvent {
                         
                     }   
                 } else {
+                    $endTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
                     Write-Host "No records found between $EventStartTime and $endTime" -ForegroundColor Red
                     Exit
                 }                 			       
             }
             catch{			
-                write-host "Error : $_.ErrorDetails.Message"
-                write-host "Command : $_.InvocationInfo.Line"			
+                Write-Error "An error occurred: $($_.Exception.Message)"		
             }                   
         } While ($iterations -le $apiResponse.totalPages )
 
@@ -301,8 +311,7 @@ function Get-RSASecurIDEvent {
         Remove-Item $RSAPrivateKeyToSignPath -Force
     }
     catch {	
-        write-host "Error : $_.ErrorDetails.Message"
-        write-host "Command : $_.InvocationInfo.Line"
+        Write-Error "An error occurred: $($_.Exception.Message)"
     }
 }
 
