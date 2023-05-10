@@ -184,9 +184,14 @@ Function Write-OMSLogfile {
             "x-ms-date"            = $rfc1123date
             "time-generated-field" = $dateTime
         }
-        $response = Invoke-WebRequest -Uri $LAURI.Trim() -Method $method -ContentType $contentType -Headers $headers -Body $Body -UseBasicParsing
-        Write-Verbose -message ('Post Function Return Code ' + $response.statuscode)
-        return $response.statuscode
+        try {
+            $response = Invoke-WebRequest -Uri $LAURI.Trim() -Method $method -ContentType $contentType -Headers $headers -Body $Body -UseBasicParsing
+            Write-Verbose -message ('Post Function Return Code ' + $response.statuscode)
+            return $response.statuscode
+        }
+        catch {
+            Write-Error "An error occurred: $($_.Exception.Message)"
+        }
     }   
 
     # Check if time is UTC, Convert to UTC if not.
@@ -199,9 +204,14 @@ Function Write-OMSLogfile {
     $logMessage = ($logdata | ConvertTo-Json -Depth 20)
     
     #Submit the data
-    $returnCode = PostLogAnalyticsData -CustomerID $CustomerID -SharedKey $SharedKey -Body $logMessage -Type $type
-    Write-Verbose -Message "Post Statement Return Code $returnCode"
-    return $returnCode
+    try {
+        $returnCode = PostLogAnalyticsData -CustomerID $CustomerID -SharedKey $SharedKey -Body $logMessage -Type $type
+        return $returnCode
+    }
+    catch {
+        Write-Error "An error occurred: $($_.Exception.Message)"
+    }
+    
 }
 
 Function SendToLogA ($eventsData, $eventsTable) {    	
