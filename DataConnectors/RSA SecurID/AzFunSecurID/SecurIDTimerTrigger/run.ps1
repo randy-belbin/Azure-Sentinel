@@ -155,7 +155,7 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
     $resource = "/api/logs";
     $rfc1123date = [DateTime]::UtcNow.ToString("r");
     $contentLength = $body.Length;
-    $signature = BuildSignature `
+    $signature = Build-Signature `
                 -customerId $customerId `
                 -sharedKey $sharedKey `
                 -date $rfc1123date `
