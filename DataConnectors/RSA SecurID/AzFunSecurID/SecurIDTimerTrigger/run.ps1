@@ -184,7 +184,7 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
             $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
             if ($tempDataSize -gt 25MB) {
                 try {                
-                    $response = Invoke-WebRequest -Body $tempdata -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+                    $response = Invoke-WebRequest -Body $tempdata -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
                 } catch {
                     Write-Error "An error occurred: $($_.Exception.Message)"
                 }
@@ -196,16 +196,15 @@ function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
         }
         Write-Host "Sending left over data = $Tempdatasize"
         try {
-            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+            $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
         } catch {
             Write-Error "An error occurred: $($_.Exception.Message)"
         }
-
     }
     Else {
         #Send to Log A as is       
         try { 
-            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+            $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
         } catch {
             Write-Error "An error occurred: $($_.Exception.Message)"
         }
