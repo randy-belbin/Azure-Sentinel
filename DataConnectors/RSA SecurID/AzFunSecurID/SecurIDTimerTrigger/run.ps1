@@ -185,7 +185,7 @@ Function Write-OMSLogfile {
             "time-generated-field" = $dateTime
         }
         try {
-            $response = Invoke-WebRequest -Uri $LAURI.Trim() -Method $method -ContentType $contentType -Headers $headers -Body $Body -UseBasicParsing
+            $response = Invoke-WebRequest -Uri $LAURI.Trim() -Method $method -ContentType $contentType -Headers $headers -Body $Body
             Write-Verbose -message ('Post Function Return Code ' + $response.statuscode)
             return $response.statuscode
         }
