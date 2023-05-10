@@ -44,7 +44,7 @@ $RSAPrivateKeyToSignPath = "$($AzFunDrive)home\site\RSA_PrivateKey.key"
 
 
 
-if($logAnalyticsUri.Trim() -notmatch 'https:\/\/([\w\-]+)\.ods\.opinsights\.azure.([a-zA-Z\.]+)$')
+if($LAURI.Trim() -notmatch 'https:\/\/([\w\-]+)\.ods\.opinsights\.azure.([a-zA-Z\.]+)$')
 {
     Write-Error -Message "Invalid Log Analytics Uri." -ErrorAction Stop
     Exit
@@ -128,28 +128,9 @@ Function Get-SignedJWTToken {
 }
 
 
-Function Write-OMSLogfile { 
-    [cmdletbinding()]
-    Param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [datetime]$dateTime,
-        [parameter(Mandatory = $true, Position = 1)]
-        [string]$type,
-        [Parameter(Mandatory = $true, Position = 2)]
-        [psobject]$logdata,
-        [Parameter(Mandatory = $true, Position = 3)]
-        [string]$CustomerID,
-        [Parameter(Mandatory = $true, Position = 4)]
-        [string]$SharedKey
-    )
-    Write-Verbose -Message "DateTime: $dateTime"
-    Write-Verbose -Message ('DateTimeKind:' + $dateTime.kind)
-    Write-Verbose -Message "Type: $type"
-    write-Verbose -Message "LogData: $logdata"   
-
-    # Supporting Functions
-    # Function to create the auth signature
-    Function BuildSignature ($CustomerID, $SharedKey, $Date, $ContentLength, $Method, $ContentType, $Resource) {
+# Function to build the authorization signature to post to Log Analytics
+Function Build-Signature ($CustomerID, $SharedKey, $Date, $ContentLength, $Method, $ContentType, $Resource) {
+    try {
         $xheaders = 'x-ms-date:' + $Date
         $stringToHash = $Method + "`n" + $contentLength + "`n" + $contentType + "`n" + $xHeaders + "`n" + $Resource
         $bytesToHash = [text.Encoding]::UTF8.GetBytes($stringToHash)
@@ -160,72 +141,53 @@ Function Write-OMSLogfile {
         $encodeHash = [convert]::ToBase64String($calculateHash)
         $authorization = 'SharedKey {0}:{1}' -f $CustomerID, $encodeHash
         return $authorization
+    } catch {
+        Write-Error "An error occurred - Build-Signature: $($_.Exception.Message)"
     }
-    # Function to create and post the request
-    Function PostLogAnalyticsData ($CustomerID, $SharedKey, $Body, $Type) {
-        $method = "POST"
-        $contentType = 'application/json'
-        $resource = '/api/logs'
-        $rfc1123date = ($dateTime).ToString('r')
-        $ContentLength = $Body.Length
-        $signature = BuildSignature `
-            -customerId $CustomerID `
-            -sharedKey $SharedKey `
-            -date $rfc1123date `
-            -contentLength $ContentLength `
-            -method $method `
-            -contentType $contentType `
-            -resource $resource
-        $LAURI = $LAURI.Trim() + $resource + "?api-version=2016-04-01"
-		Write-Output "LAURI : $LAURI"
-        $headers = @{
-            "Authorization"        = $signature;
-            "Log-Type"             = $type;
-            "x-ms-date"            = $rfc1123date
-            "time-generated-field" = $dateTime
-        }
-        try {
-            $response = Invoke-WebRequest -Uri $LAURI.Trim() -Method $method -ContentType $contentType -Headers $headers -Body $Body
-            Write-Verbose -message ('Post Function Return Code ' + $response.statuscode)
-            return $response.statuscode
-        }
-        catch {
-            Write-Error "An error occurred: $($_.Exception.Message)"
-        }
-    }   
-
-    # Check if time is UTC, Convert to UTC if not.
-    # $dateTime = (Get-Date)
-    if ($dateTime.kind.tostring() -ne 'Utc') {
-        $dateTime = $dateTime.ToUniversalTime()
-        Write-Verbose -Message $dateTime
-    }
-    #Build the JSON file
-    $logMessage = ($logdata | ConvertTo-Json -Depth 20)
-    
-    #Submit the data
-    try {
-        $returnCode = PostLogAnalyticsData -CustomerID $CustomerID -SharedKey $SharedKey -Body $logMessage -Type $type
-        return $returnCode
-    }
-    catch {
-        Write-Error "An error occurred: $($_.Exception.Message)"
-    }
-    
 }
 
-Function SendToLogA ($eventsData, $eventsTable) {    	
-	#Test Size; Log A limit is 30MB
+# Function to POST the data payload to a Log Analytics workspace
+function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
+{
+    $TimeStampField = "DateValue"
+    $method = "POST";
+    $contentType = "application/json";
+    $resource = "/api/logs";
+    $rfc1123date = [DateTime]::UtcNow.ToString("r");
+    $contentLength = $body.Length;
+    $signature = BuildSignature `
+                -customerId $customerId `
+                -sharedKey $sharedKey `
+                -date $rfc1123date `
+                -contentLength $contentLength `
+                -method $method `
+                -contentType $contentType `
+                -resource $resource
+
+    $LAURI = $LAURI + $resource + "?api-version=2016-04-01"
+
+    $headers = @{
+        "Authorization" = $signature;
+        "Log-Type" = $logType;
+        "x-ms-date" = $rfc1123date;
+        "time-generated-field" = $TimeStampField;
+    };
+    
+    #Test Size; Log A limit is 30MB
     $tempdata = @()
     $tempDataSize = 0
     
-    if ((($eventsData |  Convertto-json -depth 20).Length) -gt 25MB) {        
+    if ((($body |  Convertto-json -depth 20).Length) -gt 25MB) {        
 		Write-Host "Upload is over 25MB, needs to be split"									 
-        foreach ($record in $eventsData) {            
+        foreach ($record in $body) {            
             $tempdata += $record
             $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
             if ($tempDataSize -gt 25MB) {
-                $postLAStatus = Write-OMSLogfile -dateTime (Get-Date) -type $eventsTable -logdata $tempdata -CustomerID $workspaceId -SharedKey $workspaceKey
+                try {                
+                    $response = Invoke-WebRequest -Body $tempdata -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+                } catch {
+                    Write-Error "An error occurred: $($_.Exception.Message)"
+                }
                 write-Host "Sending data = $TempDataSize"
                 $tempdata = $null
                 $tempdata = @()
@@ -233,13 +195,24 @@ Function SendToLogA ($eventsData, $eventsTable) {
             }
         }
         Write-Host "Sending left over data = $Tempdatasize"
-        $postLAStatus = Write-OMSLogfile -dateTime (Get-Date) -type $eventsTable -logdata $eventsData -CustomerID $workspaceId -SharedKey $workspaceKey
-    }
-    Else {          
-        $postLAStatus = Write-OMSLogfile -dateTime (Get-Date) -type $eventsTable -logdata $eventsData -CustomerID $workspaceId -SharedKey $workspaceKey        
-    }
+        try {
+            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+        } catch {
+            Write-Error "An error occurred: $($_.Exception.Message)"
+        }
 
-    return $postLAStatus
+    }
+    Else {
+        #Send to Log A as is       
+        try { 
+            $response = Invoke-WebRequest -Body $body -Uri $logAnalyticsUri -Method $method -ContentType $contentType -Headers $headers
+        } catch {
+            Write-Error "An error occurred: $($_.Exception.Message)"
+        }
+
+    }
+    
+    return $response.StatusCode
 }
 
 # Function to retrieve the checkpoint start time of the last successful API call for a given logtype. Checkpoint file will be created if none exists
@@ -303,19 +276,24 @@ function Get-RSASecurIDEvent {
                 
         $iterations=1        
         DO{            
-            try{			
+            try {			
                 $apiResponse = $null			
                 Write-Output "Calling RSA API"
                 $apiResponse = Invoke-RestMethod -Uri $RSA_API_End_Point -Method 'GET' -Headers $RSAAPIHeaders
                 Write-Host "$($apiResponse.elements.Length)"
-                if ($($apiResponse.totalElements) -gt 0) {                
-                    $responseCode = SendToLogA -EventsData $($apiResponse.elements) -EventsTable $RSA_LogA_Table
+                if ($apiResponse.totalElements -gt 0) {  
+                    #Build the JSON file
+                    $logMessage = ($apiResponse.elements | ConvertTo-Json -Depth 20)              
+                    $responseCode = Post-LogAnalyticsData -customerId $workspaceId `
+                                    -sharedKey $workspaceKey `
+                                    -body $logMessage `
+                                    -logType $RSA_LogA_Table
                 
                     if ($responseCode -ne 200){
                         Write-Error -Message "ERROR: Log Analytics POST, Status Code: $responseCode, unsuccessful."
                     }
                     else {
-                        if ($($apiResponse.totalPages) -gt 1) {
+                        if ($apiResponse.totalPages -gt 1) {
                             $iterations++
                             If ($RSA_Log_Type.ToLower() -eq "admin") {
                                 $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/adminlog/exportlogs?startTimeAfter=$($EventStartTime)&page=$iterations"        
@@ -323,8 +301,7 @@ function Get-RSASecurIDEvent {
                             elseif ($RSA_Log_Type.ToLower() -eq "user") {
                                 $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/usereventlog/exportlogs?startTimeAfter=$($EventStartTime)&page=$iterations"        
                             }            
-                        }       
-                        
+                        }                               
                     }   
                 } else {
                     $endTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
@@ -332,7 +309,7 @@ function Get-RSASecurIDEvent {
                     Exit
                 }                 			       
             }
-            catch{			
+            catch {			
                 Write-Error "An error occurred: $($_.Exception.Message)"		
             }                   
         } While ($iterations -le $apiResponse.totalPages )
