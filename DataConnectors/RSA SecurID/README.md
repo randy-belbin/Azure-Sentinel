@@ -73,11 +73,3 @@ The APIs mentioned above will retrieve records from the point where the previous
    d.	Update your own schedule using cron expression.
    ```
    **Note: For a `TimerTrigger` to work, you provide a schedule in the form of a [cron expression](https://en.wikipedia.org/wiki/Cron#CRON_expression)(See the link for full details). A cron expression is a string with 6 separate expressions which represent a given schedule via patterns. The pattern we use to represent every 10 minutes is `0 */10 * * * *`. This, in plain text, means: "When seconds is equal to 0, minutes is divisible by 10, for any hour, day of the month, month, day of the week, or year".**
-
-4. Parameterized event duration using environment variable "EventTimeInterval". Value must be in minutes.  
-   **Note**  
-   The values for the Azure Function trigger Schedule and EventTimeInterval must match each other.  
-   
-   Ex: If you want to trigger function every 10 min then values must be  
-   EventTimeInterval=10  
-   Schedule=0 */10 * * * *  

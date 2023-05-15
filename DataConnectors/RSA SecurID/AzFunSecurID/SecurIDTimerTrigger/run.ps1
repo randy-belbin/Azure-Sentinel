@@ -3,7 +3,7 @@
     Language:       PowerShell
     Version:        1.0
     Author:         Sreedhar Ande
-    Last Modified:  5/5/2023
+    Last Modified:  5/15/2023
     Comment:        The Cloud Administration Event Log API is a REST-based web services interface that allows audit log events to be retrieved from the Cloud Authentication Service.
     Note:Above API's resumes getting records from the spot where the previous call left off to avoid duplication of records in RSACloudAdministrationEventLogs_CL Log Analytics Workspace custom tables
 
@@ -34,7 +34,6 @@ $firstStartTimeRecord = $env:firstStartTimeRecord
 $RSA_Log_Type = $env:LogType
 $LAURI = $env:LAURI
 $RSA_LogA_Table = $env:LATableName
-$EventTimeInterval = $env:EventTimeInterval
 $storageAccountContainer = "rsasecurid"
 
 $AzFunDrive = (Get-Location).Drive.Root
@@ -56,18 +55,22 @@ if ($env:MSI_SECRET -and (Get-Module -ListAvailable Az.Accounts)){
 }
 
 Function Read-PrivateCerti {
-    $storageAccountContext = New-AzStorageContext -ConnectionString $AzureWebJobsStorage
-    $checkBlob = Get-AzStorageBlob -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext
-    if($null -ne $checkBlob){
-        Get-AzStorageBlobContent -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext -Destination $RSACredentialsPath -Force    
-        #Read SecurID API Key file
-        $RSAKeyJson = Get-Content $RSACredentialsPath -Raw | ConvertFrom-Json
-        Set-Content -Path $RSAPrivateKeyToSignPath -Value $RSAKeyJson.accessKey
-        return $RSAKeyJson
-    } else {
-        Write-Error "No RSA_Credentials.key file, exiting"
-        Exit
-    }   
+    try {
+        $storageAccountContext = New-AzStorageContext -ConnectionString $AzureWebJobsStorage
+        $checkBlob = Get-AzStorageBlob -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext
+        if($null -ne $checkBlob){
+            Get-AzStorageBlobContent -Blob "RSA_Credentials.key" -Container $storageAccountContainer -Context $storageAccountContext -Destination $RSACredentialsPath -Force    
+            #Read SecurID API Key file
+            $RSAKeyJson = Get-Content $RSACredentialsPath -Raw | ConvertFrom-Json
+            Set-Content -Path $RSAPrivateKeyToSignPath -Value $RSAKeyJson.accessKey
+            return $RSAKeyJson
+        } else {
+            Write-Error "No RSA_Credentials.key file, exiting"
+            Exit
+        }   
+    } catch {
+        Write-Error "An error occurred - Read-PrivateCerti: $($_.Exception.Message)"
+    }
 }
 
 Function Get-SignedJWTToken {            
@@ -120,6 +123,7 @@ Function Get-SignedJWTToken {
     }
     catch {
         Write-Output "Please check you have DerConverter.dll and PemUtils.dll under $($AzFunDrive)home\site\wwwroot\Modules\"
+        Write-Error "An error occurred - Get-SignedJWTToken: $($_.Exception.Message)"
         $keyStream.Close()
         $keyStream.Dispose()
     }
@@ -149,113 +153,121 @@ Function Build-Signature ($CustomerID, $SharedKey, $Date, $ContentLength, $Metho
 # Function to POST the data payload to a Log Analytics workspace
 function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
 {
-    $TimeStampField = "DateValue"
-    $method = "POST";
-    $contentType = "application/json";
-    $resource = "/api/logs";
-    $rfc1123date = [DateTime]::UtcNow.ToString("r");
-    $contentLength = $body.Length;
-    $signature = Build-Signature `
-                -customerId $customerId `
-                -sharedKey $sharedKey `
-                -date $rfc1123date `
-                -contentLength $contentLength `
-                -method $method `
-                -contentType $contentType `
-                -resource $resource
+    try {
+        $TimeStampField = "DateValue"
+        $method = "POST";
+        $contentType = "application/json";
+        $resource = "/api/logs";
+        $rfc1123date = [DateTime]::UtcNow.ToString("r");
+        $contentLength = $body.Length;
+        $signature = Build-Signature `
+                    -customerId $customerId `
+                    -sharedKey $sharedKey `
+                    -date $rfc1123date `
+                    -contentLength $contentLength `
+                    -method $method `
+                    -contentType $contentType `
+                    -resource $resource
 
-    $LAURI = $LAURI + $resource + "?api-version=2016-04-01"
+        $LAURI = $LAURI + $resource + "?api-version=2016-04-01"
 
-    $headers = @{
-        "Authorization" = $signature;
-        "Log-Type" = $logType;
-        "x-ms-date" = $rfc1123date;
-        "time-generated-field" = $TimeStampField;
-    };
-    
-    #Test Size; Log A limit is 30MB
-    $tempdata = @()
-    $tempDataSize = 0
-    
-    if ((($body |  Convertto-json -depth 20).Length) -gt 25MB) {        
-		Write-Host "Upload is over 25MB, needs to be split"									 
-        foreach ($record in $body) {            
-            $tempdata += $record
-            $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
-            if ($tempDataSize -gt 25MB) {
-                try {                
-                    $response = Invoke-WebRequest -Body $tempdata -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
-                } catch {
-                    Write-Error "An error occurred: $($_.Exception.Message)"
+        $headers = @{
+            "Authorization" = $signature;
+            "Log-Type" = $logType;
+            "x-ms-date" = $rfc1123date;
+            "time-generated-field" = $TimeStampField;
+        };
+        
+        #Test Size; Log A limit is 30MB
+        $tempdata = @()
+        $tempDataSize = 0
+        
+        if ((($body |  Convertto-json -depth 20).Length) -gt 25MB) {        
+            Write-Host "Upload is over 25MB, needs to be split"									 
+            foreach ($record in $body) {            
+                $tempdata += $record
+                $tempDataSize += ($record | ConvertTo-Json -depth 20).Length
+                if ($tempDataSize -gt 25MB) {
+                    try {                
+                        $response = Invoke-WebRequest -Body $tempdata -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
+                    } catch {
+                        Write-Error "An error occurred: $($_.Exception.Message)"
+                    }
+                    write-Host "Sending data = $TempDataSize"
+                    $tempdata = $null
+                    $tempdata = @()
+                    $tempDataSize = 0
                 }
-                write-Host "Sending data = $TempDataSize"
-                $tempdata = $null
-                $tempdata = @()
-                $tempDataSize = 0
+            }
+            Write-Host "Sending left over data = $Tempdatasize"
+            try {
+                $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
+            } catch {
+                Write-Error "An error occurred: $($_.Exception.Message)"
             }
         }
-        Write-Host "Sending left over data = $Tempdatasize"
-        try {
-            $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
-        } catch {
-            Write-Error "An error occurred: $($_.Exception.Message)"
-        }
-    }
-    Else {
-        #Send to Log A as is       
-        try { 
-            $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
-        } catch {
-            Write-Error "An error occurred: $($_.Exception.Message)"
-        }
+        Else {
+            #Send to Log A as is       
+            try { 
+                $response = Invoke-WebRequest -Body $body -Uri $LAURI -Method $method -ContentType $contentType -Headers $headers
+            } catch {
+                Write-Error "An error occurred: $($_.Exception.Message)"
+            }
 
+        }        
+        return $response.StatusCode
+    } catch {
+        Write-Error "An error occurred - Post-LogAnalyticsData: $($_.Exception.Message)"
     }
-    
-    return $response.StatusCode
 }
 
 # Function to retrieve the checkpoint start time of the last successful API call for a given logtype. Checkpoint file will be created if none exists
-function GetStartTime($CheckpointFile) {
-    if ([System.IO.File]::Exists($CheckpointFile) -eq $false) {        
-        if ($null -eq $firstStartTimeRecord) {
-            $firstStartTimeRecord = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
-        } else {
-            Write-Host "Requested Start Time Record :" $firstStartTimeRecord    
-            $dt = Get-Date("$firstStartTimeRecord")
-            $firstStartTimeRecord = $dt.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
-            Write-Host "Requested Start Time Record :" $firstStartTimeRecord
+function Get-StartTime($CheckpointFile) {
+    try {
+        if ([System.IO.File]::Exists($CheckpointFile) -eq $false) {        
+            if ($null -eq $firstStartTimeRecord) {
+                $firstStartTimeRecord = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
+            } else {
+                Write-Host "Requested Start Time Record :" $firstStartTimeRecord    
+                $dt = Get-Date("$firstStartTimeRecord")
+                $firstStartTimeRecord = $dt.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
+                Write-Host "Requested Start Time Record :" $firstStartTimeRecord
+            }
+            $CheckpointLog = @{}
+            $CheckpointLog.Add('LastSuccessfulTime', $firstStartTimeRecord)
+            $CheckpointLog.GetEnumerator() | Select-Object -Property Key,Value | Export-CSV -Path $CheckpointFile -NoTypeInformation
+            return $firstStartTimeRecord
         }
-        $CheckpointLog = @{}
-        $CheckpointLog.Add('LastSuccessfulTime', $firstStartTimeRecord)
-        $CheckpointLog.GetEnumerator() | Select-Object -Property Key,Value | Export-CSV -Path $CheckpointFile -NoTypeInformation
-        return $firstStartTimeRecord
-    }
-    else {
-        $GetLastRecordTime = Import-Csv -Path $CheckpointFile
-        $startTime = $GetLastRecordTime | ForEach-Object {
-                        if($_.Key -eq 'LastSuccessfulTime') {
-                            $_.Value
+        else {
+            $GetLastRecordTime = Import-Csv -Path $CheckpointFile
+            $startTime = $GetLastRecordTime | ForEach-Object {
+                            if($_.Key -eq 'LastSuccessfulTime') {
+                                $_.Value
+                            }
                         }
-                    }
-        
-        $IntEventTimeInterval = [int]$EventTimeInterval
-        $startTime = [DateTime]::ParseExact($startTime, "yyyy-MM-ddTHH:mm:ss.fffzzz", $null)
-        $startTime = $startTime.AddMinutes(-$IntEventTimeInterval).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")        
-        
-        return $startTime
+            $startTime = [DateTime]::ParseExact($startTime, "yyyy-MM-ddTHH:mm:ss.fffzzz", $null)
+                
+            return $startTime
+        }
+    } catch {
+        Write-Error "An error occurred - Get-StartTime: $($_.Exception.Message)"
     }
 }
 
 # Function to update the checkpoint time with the last successful API call end time
-function UpdateCheckpointTime($CheckpointFile, $LastSuccessfulTime){
-    $checkpoints = Import-Csv -Path $CheckpointFile
-    $checkpoints | ForEach-Object{ if($_.Key -eq 'LastSuccessfulTime'){$_.Value = $LastSuccessfulTime}}
-    $checkpoints | Select-Object -Property Key,Value | Export-CSV -Path $CheckpointFile -NoTypeInformation
+function Update-CheckpointTime($CheckpointFile, $LastSuccessfulTime) {
+    try {
+        $checkpoints = Import-Csv -Path $CheckpointFile
+        $checkpoints | ForEach-Object{ if($_.Key -eq 'LastSuccessfulTime'){$_.Value = $LastSuccessfulTime}}
+        $checkpoints | Select-Object -Property Key,Value | Export-CSV -Path $CheckpointFile -NoTypeInformation
+    } catch {
+        Write-Error "An error occurred - Update-CheckpointTime: $($_.Exception.Message)"
+    }
 }
 
 function Get-RSASecurIDEvent {
     $RSAKeyJson = Read-PrivateCerti
-    $EventStartTime = GetStartTime -CheckpointFile $CheckPointFile
+    $EventStartTime = Get-StartTime -CheckpointFile $CheckPointFile
     $EventStartTime = $EventStartTime.replace('+', '%2B')
     # Format Endpoint Admin/User
     If ($RSA_Log_Type.ToLower() -eq "admin") {
@@ -274,12 +286,16 @@ function Get-RSASecurIDEvent {
         $RSAAPIHeaders.Add("Authorization", "Bearer $signedBase64Token")
                 
         $iterations=1        
-        DO{            
+        DO {            
             try {			
-                $apiResponse = $null			
-                Write-Output "Calling RSA API"
-                $apiResponse = Invoke-RestMethod -Uri $RSA_API_End_Point -Method 'GET' -Headers $RSAAPIHeaders
-                Write-Host "$($apiResponse.elements.Length)"
+                $apiResponse = $null
+                try {                			
+                    Write-Output "Calling RSA API - $RSA_API_End_Point"
+                    $apiResponse = Invoke-RestMethod -Uri $RSA_API_End_Point -Method 'GET' -Headers $RSAAPIHeaders
+                    Write-Host "$($apiResponse.elements.Length)"
+                } catch {
+                    Write-Error "An error occurred: $($_.Exception.Message)"
+                }
                 if ($apiResponse.totalElements -gt 0) {  
                     #Build the JSON file
                     $logMessage = ($apiResponse.elements | ConvertTo-Json -Depth 20)              
@@ -317,10 +333,10 @@ function Get-RSASecurIDEvent {
         if ($responseCode -eq 200) {
             Write-Host "SUCCESS: $($apiResponse.totalElements) records found between $EventStartTime and $endTime and posted to Log Analytics" -ForegroundColor Green
         }
-        UpdateCheckpointTime -CheckpointFile $checkPointFile -LastSuccessfulTime $endTime
+        Update-CheckpointTime -CheckpointFile $checkPointFile -LastSuccessfulTime $endTime
 
-        Remove-Item $RSACredentialsPath -Force
-        Remove-Item $RSAPrivateKeyToSignPath -Force
+        Remove-Item "$RSACredentialsPath" -Force
+        Remove-Item "$RSAPrivateKeyToSignPath" -Force
     }
     catch {	
         Write-Error "An error occurred: $($_.Exception.Message)"

@@ -203,8 +203,7 @@
 			"firstStartTimeRecord": "[parameters('FirstStartTimeRecord')]",
 			"LogType": "[parameters('RSALogtype')]",
 			"LATableName": "[parameters('LogAnalyticsTableName')]",
-			"Schedule": "0 */10 * * * *",
-			"EventTimeInterval": "10",
+			"Schedule": "0 */10 * * * *",			
 			"LAURI": "[variables('LogAnaltyicsUri')]",			
             "WEBSITE_RUN_FROM_PACKAGE": "https://github.com/sreedharande/Azure-Sentinel/blob/RSA-Connector/DataConnectors/RSA%20SecurID/AzFunSecurID/SecurIDTimerTrigger.zip?raw=true"
           }
