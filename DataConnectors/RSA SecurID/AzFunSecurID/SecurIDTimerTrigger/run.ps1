@@ -268,7 +268,10 @@ function Update-CheckpointTime($CheckpointFile, $LastSuccessfulTime) {
 function Get-RSASecurIDEvent {
     $RSAKeyJson = Read-PrivateCerti
     $EventStartTime = Get-StartTime -CheckpointFile $CheckPointFile
-    $EventStartTime = $EventStartTime.replace('+', '%2B')
+    $character = "+"
+    if ($EventStartTime -match $character) {
+        $EventStartTime = $EventStartTime.replace('+', '%2B')
+    }    
     # Format Endpoint Admin/User
     If ($RSA_Log_Type.ToLower() -eq "admin") {
         $RSA_API_End_Point = "$($RSAKeyJson.adminRestApiUrl)v1/adminlog/exportlogs?startTimeAfter=$($EventStartTime)"  
