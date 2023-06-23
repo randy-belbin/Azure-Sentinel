@@ -3,7 +3,7 @@
     Language:       PowerShell
     Version:        1.0
     Author:         Sreedhar Ande
-    Last Modified:  5/15/2023
+    Last Modified:  6/23/2023
     Comment:        The Cloud Administration Event Log API is a REST-based web services interface that allows audit log events to be retrieved from the Cloud Authentication Service.
     Note:Above API's resumes getting records from the spot where the previous call left off to avoid duplication of records in RSACloudAdministrationEventLogs_CL Log Analytics Workspace custom tables
 
