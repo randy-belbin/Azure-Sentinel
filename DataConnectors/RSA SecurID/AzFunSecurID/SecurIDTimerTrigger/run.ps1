@@ -268,7 +268,7 @@ function Update-CheckpointTime($CheckpointFile, $LastSuccessfulTime) {
 function Get-RSASecurIDEvent {
     $RSAKeyJson = Read-PrivateCerti
     $EventStartTime = Get-StartTime -CheckpointFile $CheckPointFile
-    $character = "+"
+    $character = "\+"
     if ($EventStartTime -match $character) {
         $EventStartTime = $EventStartTime.replace('+', '%2B')
     }    
