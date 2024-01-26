@@ -46,6 +46,30 @@ $ContentKindDict.Add("AutomationRule", "ar")
 $ContentKindDict.Add("ResourcesDataConnector", "rdc")
 $ContentKindDict.Add("Standalone", "sa")
 
+function ReadFileContent($filePath) {
+    try {
+        if (!(Test-Path -Path "$filePath")) {
+            return $null;
+        }
+
+        $stream = New-Object System.IO.StreamReader -Arg "$filePath";
+        $content = $stream.ReadToEnd();
+        $stream.Close();
+
+        if ($null -eq $content) {
+            Write-Host "Error in reading file $filePath"
+            return $null;
+        } else {
+            $fileContent = $content | ConvertFrom-Json;
+            return $fileContent;
+        }
+    }
+    catch {
+        Write-Host "Error occured in ReadFileContent. Error details : $_"
+        return $null;
+    }
+}
+
 function handleEmptyInstructionProperties ($inputObj) {
     $outputObj = $inputObj |
     Get-Member -MemberType *Property |
@@ -62,20 +86,145 @@ function handleEmptyInstructionProperties ($inputObj) {
     $outputObj
 }
 
-function removePropertiesRecursively ($resourceObj, $isWorkbook = $false) {
+function addBlankVariables($resourceObj)
+{
+    $resourceObj.$key = "[variables('blanks')]";
+    if (!$global:baseMainTemplate.variables.blanks) {
+        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "blanks" -NotePropertyValue "[replace('b', 'b', '')]"
+    }
+}
+
+function addEmptyArrayVariables($resourceObj)
+{
+    $resourceObj.$key = "[variables('TemplateEmptyArray')]";
+    if (!$global:baseMainTemplate.variables.TemplateEmptyArray) {
+        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "TemplateEmptyArray" -NotePropertyValue "[json('[]')]"
+    }
+}
+
+function addEmptyObjectVariables($resourceObj)
+{
+    $resourceObj.$key = "[variables('TemplateEmptyObject')]";
+    if (!$global:baseMainTemplate.variables.TemplateEmptyObject) {
+        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "TemplateEmptyObject" -NotePropertyValue "[json('{}')]"
+    }
+}
+
+function addNullVariables($resourceObj)
+{
+    $resourceObj.$key = "[variables('TemplateNullVariable')]";
+    if (!$global:baseMainTemplate.variables.TemplateNullVariable) {
+        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "TemplateNullVariable" -NotePropertyValue "null"
+    }
+}
+
+function IsSkipActionInputs($resourceObj, $key, $val, $isAction = $false)
+{
+    if ($isAction -and $key -eq "inputs" -and 
+        $val -is [System.Management.Automation.PSCustomObject] -and 
+        -not "$val")
+    {
+        # when action has "inputs": {}
+        addEmptyObjectVariables $resourceObj
+        return $true
+    }
+
+    if ($isAction -and $key -eq "inputs" -and 
+        $null -ne $val -and 
+        $val -is [System.Array] -and 
+        $val.count -eq 0)
+    {
+        # when action has "inputs": []
+        addEmptyArrayVariables $resourceObj
+        return $true
+    }
+
+    if ($isAction -and $key -eq "inputs" -and 
+        $null -eq $val)
+    {
+        # when action has "inputs": null
+        addNullVariables $resourceObj
+        return $true
+    }
+    
+    return $false
+}
+
+function IsSkipActionInputsValue($resourceObj, $key, $val, $isAction = $false, $isInputs = $false)
+{
+    if ($isAction -and $isInputs -and 
+        $key -eq "value" -and 
+        $val -is [System.Management.Automation.PSCustomObject] -and 
+        -not "$val")
+    {
+        # when action has inputs--> "value": {}
+        addEmptyObjectVariables $resourceObj
+        continue
+    }
+
+    if ($isAction -and $isInputs -and 
+        $key -eq "value" -and 
+        $null -ne $val -and 
+        $val -is [System.Array] -and 
+        $val.count -eq 0)
+    {
+        # when action has inputs--> "value": []
+        addEmptyArrayVariables $resourceObj
+        continue
+    }
+
+    if ($isAction -and $isInputs -and 
+        $key -eq "value" -and 
+        $null -eq $val)
+    {
+        # when action has inputs--> "value": null
+        addNullVariables $resourceObj
+        continue
+    }
+}
+
+function removePropertiesRecursively ($resourceObj, $isWorkbook = $false, $isAction = $false, $isInputs = $false) {
     foreach ($prop in $resourceObj.PsObject.Properties) {
         $key = $prop.Name
         $val = $prop.Value
+
+        if ($key -eq 'actions') {
+            $isAction = $true
+        }
+
+        if ($key -eq 'inputs') {
+            $isInputs = $true
+        }
+
+        # if actions --> inputs has either {} or [] or null then we skip later code
+        if (IsSkipActionInputs $resourceObj $key $val $isAction)
+        {
+            continue
+        }
+
+        # if actions --> inputs --> value has either {} or [] or null then we skip later code
+        if (IsSkipActionInputsValue $resourceObj $key $val $isAction $isInputs)
+        {
+            continue
+        }
+
         if ($null -eq $val) {
             if ($isWorkbook)
             {
-                $resourceObj.$key = ''
+                #$resourceObj.$key = ''
+                $resourceObj.PsObject.Properties.Remove($key)
             }
             else
             {
-                $resourceObj.$key = "[variables('blanks')]";
-                if (!$global:baseMainTemplate.variables.blanks) {
-                    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "blanks" -NotePropertyValue "[replace('b', 'b', '')]"
+                if ($isAction -and $isInputs)
+                {
+                    continue
+                }
+                else {
+                    $resourceObj.$key = "[variables('blanks')]";
+                    if (!$global:baseMainTemplate.variables.blanks) {
+                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "blanks" -NotePropertyValue "[replace('b', 'b', '')]"
+                    }
                 }
             }
         }
@@ -83,7 +232,8 @@ function removePropertiesRecursively ($resourceObj, $isWorkbook = $false) {
             if ($val.Count -eq 0) {
                 if ($isWorkbook)
                 {
-                    $resourceObj.$key = '[]'
+                    #$resourceObj.$key = @()
+                    $resourceObj.PsObject.Properties.Remove($key)
                 }
                 else
                 {
@@ -96,20 +246,46 @@ function removePropertiesRecursively ($resourceObj, $isWorkbook = $false) {
             else {
                 foreach ($item in $val) {
                     $itemIndex = $val.IndexOf($item)
-                    $resourceObj.$key[$itemIndex] = $(removePropertiesRecursively $val[$itemIndex] $isWorkbook)
+                    $resourceObj.$key[$itemIndex] = $(removePropertiesRecursively $val[$itemIndex] $isWorkbook $isAction $isInputs)
                 }
             }
         }
         else {
             if ($val -is [PSCustomObject]) {
                 if ($($val.PsObject.Properties).Count -eq 0) {
-                    $resourceObj.PsObject.Properties.Remove($key)
+                    if ($key -eq "dataSources") {
+                        $resourceObj.$key = "[variables('TemplateEmptyObject')]";
+                        if (!$global:baseMainTemplate.variables.TemplateEmptyArray) {
+                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "TemplateEmptyObject" -NotePropertyValue "[json('{}')]"
+                        }
+                    } else {
+                        $resourceObj.PsObject.Properties.Remove($key)
+                    }
                 }
                 else {
-                    $resourceObj.$key = $(removePropertiesRecursively $val $isWorkbook)
+                    $resourceObj.$key = $(removePropertiesRecursively $val $isWorkbook $isAction $isInputs)
                     if ($($resourceObj.$key.PsObject.Properties).Count -eq 0) {
                         $resourceObj.PsObject.Properties.Remove($key)
                     }
+                }
+            }
+            elseif ($key -eq 'query' -and $isWorkbook -eq $true)
+            {
+                try {
+                    # this means its an json array
+                    $isValidJsonStr = $val | Test-Json -ErrorAction Ignore
+                    if ($isValidJsonStr)
+                    {
+                        $queryObj = ConvertFrom-Json $val -ErrorAction Stop;
+                        foreach ($propItem in $queryObj.PsObject.Properties) {
+                            if ($null -eq $propItem.Value -or $propItem.Value -eq '[]')
+                            {
+                                $queryObj.PsObject.Properties.Remove($propItem.Name)
+                            }
+                        }
+                        $resourceObj.$key = $queryObj | ConvertTo-Json -Compress -Depth $jsonConversionDepth | Out-String
+                    }
+                } catch {
                 }
             }
         }
@@ -232,35 +408,48 @@ function updateDescriptionCount($counter, $emplaceString, $replaceString, $count
 function GetContentSchemaVersion($defaultPackageVersion, $dataInputVersion)
 {
     # DEPENDING OF VERSION WE SHOULD SET THE CONTENTSCHEMAVERSION
-    if ($null -eq $defaultPackageVersion -or $null -eq $dataInputVersion)
+    if ($null -eq $defaultPackageVersion -and $null -eq $dataInputVersion)
     {
         # WHEN BOTH NULL
         $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "3.0.0";
     }
-    elseif ($null -ne $defaultPackageVersion -and ($dataInputVersion -ne $defaultPackageVersion))
+    elseif ($null -ne $defaultPackageVersion -and $null -ne $dataInputVersion -and ($dataInputVersion -ne $defaultPackageVersion))
     {
-        # WHEN ONE IS NULL  
-        $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "2.0.0";
+        # when both has version
+        $inputMajor = $dataInputVersion.split(".")[0]
+        $defaultMajor = $defaultPackageVersion.split(".")[0]
+
+        if (($inputMajor -ge $defaultMajor -and $defaultMajor -ge 3) -or $defaultMajor -ge 3)
+        {
+            $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "3.0.0";
+        }
+        else 
+        {
+            $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "2.0.0";
+        }
     }
     elseif ($null -eq $defaultPackageVersion -and $null -eq $dataInputVersion) {
+        # when both null
         $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "3.0.0";
         Write-Host "contentSchemaVersion set is 3.0.0 as both defaultPackageVersion and version field are null"
     }
     elseif ($null -ne $defaultPackageVersion -and $null -eq $dataInputVersion) {
+        # when data input is null and default is not null
         $major = $defaultPackageVersion.split(".")[0]
         $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "$major.0.0";
         Write-Host "contentSchemaVersion set is $major inside of elseif where defaultPackageVersion is not null but input file version is null"
     }
     elseif ($null -eq $defaultPackageVersion -and $null -ne $dataInputVersion) {
-        $inputMajor,$inputMinor,$inputBuild,$inputRevision = $dataInputVersion.split(".")
+        # when data input is not null but default is null
+        $inputMajor = $dataInputVersion.split(".")[0]
         $newMetadata.Properties | Add-Member -Name 'contentSchemaVersion' -Type NoteProperty -Value "$inputMajor.0.0";
         Write-Host "contentSchemaVersion inputMajor set is $inputMajor inside of elseif where defaultPackageVersion is null but input file version is not null"
     }
     elseif ($null -ne $defaultPackageVersion -and $null -ne $dataInputVersion -and 
     $dataInputVersion -ne $defaultPackageVersion)
     {
-        $inputMajor,$inputMinor,$inputBuild,$inputRevision = $dataInputVersion.split(".")
-        $defaultMajor,$defaultMinor,$defaultBuild,$defaultRevision = $defaultPackageVersion.split(".")
+        $inputMajor = $dataInputVersion.split(".")[0]
+        $defaultMajor = $defaultPackageVersion.split(".")[0]
             
         if ($inputMajor -gt $defaultMajor -or $inputMajor -eq $defaultMajor)
         {
@@ -306,7 +495,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
         $Author = $contentToImport.Author.Split(" - ");
         $newMetadata = [PSCustomObject]@{
             type       = $contentResourceDetails.metadata #"Microsoft.OperationalInsights/workspaces/providers/metadata";
-            apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-01-01-preview";
+            apiVersion = $contentResourceDetails.metadataApiVersion;
             location   = "[parameters('workspace-location')]";
             properties = [PSCustomObject] @{
                 version = $contentToImport.Version;
@@ -385,14 +574,16 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
         {
             $newMetadata.Properties | Add-Member -Name 'support' -Type NoteProperty -value $supportDetails;
         }
+        
+        if ($global:DependencyCriteria.Count -gt 0) {
+            $dependencies = [PSCustomObject]@{
+                operator = "AND";
+                criteria = $global:DependencyCriteria;
+            };
+    
+            $newMetadata.properties | Add-Member -Name 'dependencies' -Type NoteProperty -Value $dependencies;
+        }
 
-        $dependencies = [PSCustomObject]@{
-            operator = "AND";
-            criteria = $global:DependencyCriteria;
-        };
-        
-        $newMetadata.properties | Add-Member -Name 'dependencies' -Type NoteProperty -Value $dependencies;
-        
         if ($json.firstPublishDate -and $json.firstPublishDate -ne "") 
         {
             $newMetadata.Properties | Add-Member -Name 'firstPublishDate' -Type NoteProperty -value $json.firstPublishDate;
@@ -411,14 +602,18 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
         if ($categories -and $categories.psobject.properties['domains'] -and $categories.psobject.properties["domains"].Value.Length -gt 0) 
         {
             $categoriesDetails | Add-Member -Name 'domains' -Type NoteProperty -Value $categories.psobject.properties["domains"].Value;
-            $newMetadata.properties | Add-Member -Name 'categories' -Type NoteProperty -Value $categoriesDetails;
         }
         
         if ($categories -and $categories.psobject.properties['verticals'] -and $categories.psobject.properties["verticals"].Value.Length -gt 0) 
         {
             $categoriesDetails | Add-Member -Name 'verticals' -Type NoteProperty -Value $categories.psobject.properties["verticals"].value;
+        }
+
+        if ($null -ne $categoriesDetails)
+        {
             $newMetadata.properties | Add-Member -Name 'categories' -Type NoteProperty -Value $categoriesDetails;
         }
+
         $global:baseMainTemplate.resources += $newMetadata;
         ### Removing the Non-Sentinel Resources if there are any:
         $newobject = $global:baseMainTemplate.resources | ? {$_.type -in $contentResourceDetails.resources}
@@ -489,7 +684,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             }
                         }
 
-                        $workbookFinalPath = $baseFolderPath + 'Tools/Create-Azure-Sentinel-Solution/V2/WorkbookMetadata/WorkbooksMetadata.json';  #"https://raw.githubusercontent.com/v-amolpatil/packagingrepo/master/" #$workbookMetadataPathForPipelineRun 
+                        $workbookFinalPath = $baseFolderPath + 'Workbooks/WorkbooksMetadata.json';  
                         
                         # BELOW IS THE NEW CODE ADDED FROM AZURE SENTINEL REPO
                         if($contentToImport.TemplateSpec) {
@@ -544,7 +739,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             name       = "[parameters('workbook$global:workbookCounter-id')]";
                             location   = "[parameters('workspace-location')]";
                             kind       = "shared";
-                            apiVersion = "2021-08-01";
+                            apiVersion = $contentResourceDetails.insightsWorkbookApiVersion; #"2021-08-01";
                             metadata   = [PSCustomObject]@{};
                             properties = [PSCustomObject] @{
                                 displayName    = $contentToImport.Workbooks ? "[parameters('workbook$global:workbookCounter-name')]" : "[concat(parameters('workbook$global:workbookCounter-name'), ' - ', parameters('formattedTimeNow'))]";
@@ -582,6 +777,11 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                             return $_;
                                         }
                                     }
+                                }
+                                
+                                if ($dependencies.Count -gt 0)
+                                {
+                                    $dependencies = $dependencies[0]
                                 }
                                 $WorkbookDependencyCriteria = @();
                                 foreach($dataTypesDependencies in $dependencies.dataTypesDependencies)
@@ -625,7 +825,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                             if ($contentResourceDetails.apiVersion -eq '3.0.0')
                             {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workbookTemplateSpecName$global:workbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-wb-',uniquestring(variables('_workbookContentId$global:workbookCounter'))),variables('workbookVersion$global:workbookCounter')))]"
+                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workbookTemplateSpecName$global:workbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-wb-',uniquestring(variables('_workbookContentId$global:workbookCounter'))))]"
                             }
                             else 
                             {
@@ -649,7 +849,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                 # Add base templateSpec
                                 $baseWorkbookTemplateSpec = [PSCustomObject]@{
                                     type       = $contentResourceDetails.resourcetype;  # "Microsoft.Resources/templateSpecs";
-                                    apiVersion = "2022-02-01";
+                                    apiVersion = $contentResourceDetails.templateSpecsApiVersion; # "2022-02-01";
                                     name       = "[variables('workbookTemplateSpecName$global:workbookCounter')]";
                                     location   = "[parameters('workspace-location')]";
                                     tags       = [PSCustomObject]@{
@@ -675,7 +875,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             }
                             $workbookMetadata = [PSCustomObject]@{
                                 type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                                apiVersion = "2022-01-01-preview";
+                                apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion; #"2022-01-01-preview";
                                 name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Workbook-', last(split(variables('workbookId$global:workbookCounter'),'/'))))]";
                                 properties = [PSCustomObject]@{
                                     description = "$dependencies.description";
@@ -705,7 +905,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             # Add templateSpecs/versions resource to hold actual content
                             $workbookTemplateSpecContent = [PSCustomObject]@{
                                 type       = $contentResourceDetails.subtype; # "Microsoft.Resources/templateSpecs/versions";
-                                apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
+                                apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
                                 name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('workbookTemplateSpecName$global:workbookCounter')]" : "[concat(variables('workbookTemplateSpecName$global:workbookCounter'),'/',variables('workbookVersion$global:workbookCounter'))]";
                                 location   = "[parameters('workspace-location')]";
                                 tags       = [PSCustomObject]@{
@@ -718,7 +918,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                     "$($contentResourceDetails.dependsOn), variables('workbookTemplateSpecName$global:workbookCounter'))]"
                                 );
                                 properties = [PSCustomObject]@{
-                                    description  = "$($fileName) Workbook with template version $($contentToImport.Version)";
+                                    description  = "$($workbookKey) Workbook with template version $($contentToImport.Version)";
                                     mainTemplate = [PSCustomObject]@{
                                         '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#";
                                         contentVersion = "[variables('workbookVersion$global:workbookCounter')]";
@@ -751,7 +951,9 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         }
                         else 
                         {
-                            if ($contentToImport.version -ne '3.0.0' )
+                            $major = $contentToImport.version.split(".")[0]
+                            #if ($contentToImport.version -ne '3.0.0' )
+                            if ($major -ne 3)
                             {
                                 $global:baseMainTemplate.resources += $newWorkbook
                                 if ($contentToImport.Metadata -or $isPipelineRun)
@@ -1097,7 +1299,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                         $playbookData.variables | Add-Member -NotePropertyName "_operationId-$($resourceobj.$key)" -NotePropertyValue "[variables('operationId-$($resourceobj.$key)')]"
                                         $resourceObj.$key = "[variables('_operationId-$($resourceobj.$key)')]"
                                     }
-                                    if($contentToImport.TemplateSpec -and ($resourceObj.$key.StartsWith("[")) -and ($resourceObj.$key -ne "[variables('TemplateEmptyArray')]"))
+                                    if($contentToImport.TemplateSpec -and ($resourceObj.$key.StartsWith("[")) -and ($resourceObj.$key -ne "[variables('TemplateEmptyArray')]") -and $prop.Value -ne "[variables('TemplateEmptyObject')]" -and $prop.Value -ne "[variables('TemplateNullVariable')]")
                                     {
                                         $resourceObj.$key = "[" + $resourceObj.$key;
                                     }
@@ -1122,6 +1324,13 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                 }
                                 else {
                                     if (($prop.Value -isnot [System.Int32]) -and ($prop.Value -isnot [System.Int64])) {
+                                        if ($prop.Value -like ('*hidden-link*'))
+                                        {
+                                            $jsonValue = $prop.Value | ConvertTo-Json
+                                            $jsonValue = $jsonValue.replace('concat', '[concat')
+
+                                            $prop.Value = $jsonValue | ConvertFrom-Json
+                                        }
                                         $resourceObj.$key = $(addInternalSuffixRecursively $resourceObj.$key)
                                     }
                                 }
@@ -1302,15 +1511,15 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         if ($contentResourceDetails.apiVersion -eq '3.0.0')
                         {
                             if ($IsLogicAppsCustomConnector) {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-lc-',uniquestring(variables('_playbookContentId$global:playbookCounter'))),variables('playbookVersion$global:playbookCounter')))]"
+                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-lc-',uniquestring(variables('_playbookContentId$global:playbookCounter'))))]"
                                 $global:contentShortName  = 'lc'
                             }
                             elseif ($IsFunctionAppResource) {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-fa-',uniquestring(variables('_playbookContentId$global:playbookCounter'))),variables('playbookVersion$global:playbookCounter')))]"
+                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-fa-',uniquestring(variables('_playbookContentId$global:playbookCounter'))))]"
                                 $global:contentShortName  = 'fa'
                             }
                             else {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue  "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-pl-',uniquestring(variables('_playbookContentId$global:playbookCounter'))),variables('playbookVersion$global:playbookCounter')))]"
+                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "playbookTemplateSpecName$global:playbookCounter" -NotePropertyValue  "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-pl-',uniquestring(variables('_playbookContentId$global:playbookCounter'))))]"
                                 $global:contentShortName  = 'pl'
                             } 
                         }
@@ -1339,7 +1548,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         {
                             $basePlaybookTemplateSpec = [PSCustomObject]@{
                                 type       = $contentResourceDetails.resourcetype; # "Microsoft.Resources/templateSpecs";
-                                apiVersion = "2022-02-01";
+                                apiVersion = $contentResourceDetails.templateSpecsApiVersion; #"2022-02-01";
                                 name       = "[variables('playbookTemplateSpecName$global:playbookCounter')]";
                                 location   = "[parameters('workspace-location')]";
                                 tags       = [PSCustomObject]@{
@@ -1378,7 +1587,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         $playbookMetadata = [PSCustomObject]@{
                             type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                            apiVersion = "2022-01-01-preview";
+                            apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion; #"2022-01-01-preview";
                             name       = $IsLogicAppsCustomConnector ? "[[concat(variables('workspace-name'),'/Microsoft.SecurityInsights/',concat('LogicAppsCustomConnector-', last(split(variables('playbookId$global:playbookCounter'),'/'))))]" : 
                             $IsFunctionAppResource ? "[[concat(variables('workspace-name'),'/Microsoft.SecurityInsights/',concat('AzureFunction-', last(split(variables('playbookId$global:playbookCounter'),'/'))))]" :
                             "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Playbook-', last(split(variables('playbookId$global:playbookCounter'),'/'))))]";
@@ -1434,7 +1643,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         # Add templateSpecs/versions resource to hold actual content
                         $playbookTemplateSpecContent = [PSCustomObject]@{
                             type       = $contentResourceDetails.subtype; # "Microsoft.Resources/templateSpecs/versions";
-                            apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
+                            apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
                             name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('playbookTemplateSpecName$global:playbookCounter')]" : "[concat(variables('playbookTemplateSpecName$global:playbookCounter'),'/',variables('playbookVersion$global:playbookCounter'))]";
                             location   = "[parameters('workspace-location')]";
                             tags       = [PSCustomObject]@{
@@ -1527,10 +1736,23 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                     $global:playbookCounter += 1
     }
 
-    function GetDataConnectorMetadata($file, $contentResourceDetails)
+    $global:ccpCounter = 1
+    function GetDataConnectorMetadata($file, $contentResourceDetails, $dataFileMetadata, $solutionFileMetadata, $dcFolderName, $ccpDict = $null, $solutionBasePath, $solutionName, $ccpTables, $ccpTablesCounter)
     {
         Write-Host "Generating Data Connector using $file"
+        if ($null -ne $ccpDict)
+        {
+            # execute ccp integration code which is using CLV2
+            if ($global:ccpCounter -eq 1)
+            {
+                . "$PSScriptRoot/createCCPConnector.ps1" # load ccp resource creator
+                createCCPConnectorResources -contentResourceDetails $contentResourceDetails -dataFileMetadata $dataFileMetadata -solutionFileMetadata $solutionFileMetadata -dcFolderName $dcFolderName -ccpDict $ccpDict -solutionBasePath $solutionBasePath -solutionName $solutionName -ccpTables $ccpTables -ccpTablesCounter $ccpTablesCounter
+                $global:ccpCounter += 1
+            }
+            return
+        }
                     try {
+                        # BELOW IS OLD WAY OF CCP CONNECTOR CODE I.E CLV1 WHICH ONLY HAS CONNECTORUICONFIG AND POLLER CONFIG SECTION IN SOURCE 
                         $ccpPollingConfig = [PSCustomObject] @{}
                         $ccpConnector = $false
                         $connectorData = ConvertFrom-Json $rawData
@@ -1570,7 +1792,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                     if ($contentToImport.TemplateSpec) {
                         $connectorName = $contentToImport.Name
                         # Add workspace resource ID if not available
-                        if (!$global:baseMainTemplate.variables.workspaceResourceId) {
+                        if (!$global:baseMainTemplate.variables.workspaceResourceId -and $contentResourceDetails.contentSchemaVersion -ne '3.0.0') {
                             $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workspaceResourceId" -NotePropertyValue "[resourceId('microsoft.OperationalInsights/Workspaces', parameters('workspace'))]"
                         }
                         # If both ID and Title exist, is standard GenericUI data connector
@@ -1585,7 +1807,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         if ($contentResourceDetails.apiVersion -eq '3.0.0')
                         {
-                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "dataConnectorTemplateSpecName$global:connectorCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-dc-',uniquestring(variables('_dataConnectorContentId$global:connectorCounter'))),variables('dataConnectorVersion$global:connectorCounter')))]"
+                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "dataConnectorTemplateSpecName$global:connectorCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-dc-',uniquestring(variables('_dataConnectorContentId$global:connectorCounter'))))]"
                         }
                         else 
                         {
@@ -1603,7 +1825,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             # Add base templateSpec
                             $baseDataConnectorTemplateSpec = [PSCustomObject]@{
                                 type       = $contentResourceDetails.resourcetype; # "Microsoft.Resources/templateSpecs";
-                                apiVersion = "2022-02-01";
+                                apiVersion = $contentResourceDetails.templateSpecsApiVersion; #"2022-02-01";
                                 name       = "[variables('dataConnectorTemplateSpecName$global:connectorCounter')]";
                                 location   = "[parameters('workspace-location')]";
                                 tags       = [PSCustomObject]@{
@@ -1622,6 +1844,35 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             $existingFunctionApp = $false;
                             $instructionArray = $templateSpecConnectorData.instructionSteps
                             ($instructionArray | ForEach {if($_.description -and $_.description.IndexOf('[Deploy To Azure]') -gt 0){$existingFunctionApp = $true;}})
+
+                            if ($existingFunctionApp -eq $false)
+                            {
+                                # check if only instructions object is present without any description
+                                foreach ($item in $instructionArray) 
+                                {
+                                    if ($null -eq $item.description -and $item.instructions.Count -gt 0)
+                                    {
+                                        foreach ($instructionItem in $item.instructions)
+                                        {
+                                            $parameterCount = $instructionItem.parameters.Count -gt 0
+                                            $parameterInstructionStepsCount = $instructionItem.parameters.instructionSteps.Count -gt 0
+
+                                            if ($parameterCount -and $parameterInstructionStepsCount)
+                                            {
+                                                foreach ($desc in $instructionItem.parameters.instructionSteps)
+                                                {
+                                                    if ($desc.description && $desc.description.IndexOf('Deploy To Azure') -gt 0)
+                                                    {
+                                                        $existingFunctionApp = $true
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             if($existingFunctionApp)
                             {
                                 $templateSpecConnectorData.title = ($templateSpecConnectorData.title.Contains("using Azure Functions")) ? $templateSpecConnectorData.title : $templateSpecConnectorData.title + " (using Azure Functions)"
@@ -1641,7 +1892,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         }
                         $dataConnectorContent = [PSCustomObject]@{
                             name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',variables('_dataConnectorContentId$global:connectorCounter'))]";
-                            apiVersion = "2021-03-01-preview";
+                            apiVersion = $contentResourceDetails.dataConnectorsApiVersion; #"2021-03-01-preview";
                             type       = "Microsoft.OperationalInsights/workspaces/providers/dataConnectors";
                             location   = "[parameters('workspace-location')]";
                             kind       = ($contentToImport.Is1PConnector -eq $true) ? "StaticUI" : (($ccpConnector -eq $true) ? $connectorData.resources[0].kind : "GenericUI");
@@ -1663,7 +1914,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         }
                         $dataConnectorMetadata = [PSCustomObject]@{
                             type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                            apiVersion = "2022-01-01-preview";
+                            apiVersion = $contentResourceDetails.metadataApiVersion; #"2022-01-01-preview";
                             name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('DataConnector-', last(split(variables('_dataConnectorId$global:connectorCounter'),'/'))))]";
                             properties = [PSCustomObject]@{
                                 parentId  = "[extensionResourceId(resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspace')), 'Microsoft.SecurityInsights/dataConnectors', variables('_dataConnectorContentId$global:connectorCounter'))]";
@@ -1683,7 +1934,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         # Add templateSpecs/versions resource to hold actual content
                         $dataConnectorTemplateSpecContent = [PSCustomObject]@{
                             type       = $contentResourceDetails.subtype; # "Microsoft.Resources/templateSpecs/versions";
-                            apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
+                            apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
                             name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('dataConnectorTemplateSpecName$global:connectorCounter')]" : "[concat(variables('dataConnectorTemplateSpecName$global:connectorCounter'),'/',variables('dataConnectorVersion$global:connectorCounter'))]";
                             location   = "[parameters('workspace-location')]";
                             tags       = [PSCustomObject]@{
@@ -1730,7 +1981,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         # Add content-metadata item, in addition to template spec metadata item
                         $dataConnectorActiveContentMetadata = [PSCustomObject]@{
                             type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                            apiVersion = "2022-01-01-preview";
+                            apiVersion = $contentResourceDetails.metadataApiVersion; #"2022-01-01-preview";
                             name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('DataConnector-', last(split(variables('_dataConnectorId$global:connectorCounter'),'/'))))]";
                             dependsOn  = @("[variables('_dataConnectorId$global:connectorCounter')]");
                             location   = "[parameters('workspace-location')]";
@@ -1777,7 +2028,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         $connectorObj = [PSCustomObject]@{
                             name       = if ($contentToImport.TemplateSpec) { "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',variables('_dataConnectorContentId$global:connectorCounter'))]" }else { "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',parameters('connector$global:connectorCounter-name'))]" }
-                            apiVersion = "2021-03-01-preview";
+                            apiVersion = $contentResourceDetails.dataConnectorsApiVersion; #"2021-03-01-preview";
                             type       = "Microsoft.OperationalInsights/workspaces/providers/dataConnectors";
                             location   = "[parameters('workspace-location')]";
                             kind       = ($contentToImport.Is1PConnector -eq $true) ? "StaticUI" : "GenericUI";
@@ -1796,7 +2047,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         $connectorData.resources[0] -and
                         $connectorData.resources[0].properties -and
                         $connectorData.resources[0].properties.connectorUiConfig -and
-                        $connectorData.resources[0].properties.pollingConfig) {
+                        $connectorData.resources[0].properties.pollingConfig) 
+                    {
                         # Else check if Polling connector
                         $connectorData = $connectorData.resources[0]
                         $connectorUiConfig = $connectorData.properties.connectorUiConfig
@@ -1804,7 +2056,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         $connectorObj = [PSCustomObject]@{
                             name       = if ($contentToImport.TemplateSpec) { "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',variables('_dataConnectorContentId$global:connectorCounter'))]" }else { "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',parameters('connector$global:connectorCounter-name'))]" }
-                            apiVersion = "2021-03-01-preview";
+                            apiVersion = $contentResourceDetails.dataConnectorsApiVersion; #"2021-03-01-preview";
                             type       = "Microsoft.OperationalInsights/workspaces/providers/dataConnectors";
                             location   = "[parameters('workspace-location')]";
                             kind       = $connectorData.kind;
@@ -1915,26 +2167,31 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         $fileName = Split-Path $file -leafbase;
                         $fileName = $fileName + "_HuntingQueries";
 
-                        
-                        $hasHuntingQueryVersion = [bool]($global:baseMainTemplate.variables.PSobject.Properties.Name -match "huntingQueryVersion$global:huntingQueryCounter")
+                        $hasHuntingQueryVersion = [bool]($global:baseMainTemplate.variables.PSobject.Properties.Name -match "variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryVersion$global:huntingQueryCounter")
                         if ($hasHuntingQueryVersion)
                         {
                             $global:huntingQueryCounter += 1
                         }
-                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQueryVersion$global:huntingQueryCounter" -NotePropertyValue (($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0")
-                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQuerycontentId$global:huntingQueryCounter" -NotePropertyValue $yaml.id
-                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_huntingQuerycontentId$global:huntingQueryCounter" -NotePropertyValue "[variables('huntingQuerycontentId$global:huntingQueryCounter')]"
+
+                        $calculatedHuntingQueryVersion = ($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0"
+
+                        $objHuntingQueryVariables = [pscustomobject]@{}
+                        $objHuntingQueryVariables | Add-Member -NotePropertyName "huntingQueryVersion$global:huntingQueryCounter" -NotePropertyValue "$calculatedHuntingQueryVersion"
+
+                        $huntingQueryContentIdValue = "$($yaml.id)"
+                        $objHuntingQueryVariables | Add-Member -NotePropertyName "_huntingQuerycontentId$global:huntingQueryCounter" -NotePropertyValue "$huntingQueryContentIdValue"
+
                         $global:DependencyCriteria += [PSCustomObject]@{
                             kind      = "HuntingQuery";
-                            contentId = "[variables('_huntingQuerycontentId$global:huntingQueryCounter')]";
-                            version   = "[variables('huntingQueryVersion$global:huntingQueryCounter')]";
+                            contentId = "[variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter]";
+                            version   = "[variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryVersion$global:huntingQueryCounter]";
                         };
 
                         if ($global:huntingQueryCounter -eq 1) {
                             if (!$(queryResourceExists) -and !$contentToImport.TemplateSpec) {
                                 $baseHuntingQueryResource = [PSCustomObject] @{
                                     type       = "Microsoft.OperationalInsights/workspaces";
-                                    apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2021-06-01";
+                                    apiVersion = $contentResourceDetails.huntingOperationalInsightsWorkspacesApiVersion;
                                     name       = "[parameters('workspace')]";
                                     location   = "[parameters('workspace-location')]";
                                     resources  = @()
@@ -1978,7 +2235,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         $huntingQueryObj = [PSCustomObject] @{
                             type       = $contentToImport.TemplateSpec ? "Microsoft.OperationalInsights/savedSearches" : "savedSearches";
-                            apiVersion = "2020-08-01";
+                            apiVersion = $contentResourceDetails.savedSearchesApiVersion; #"2020-08-01";
                             name       = $contentToImport.TemplateSpec ? "$($solutionName.Replace(' ', '_'))_Hunting_Query_$global:huntingQueryCounter" : "$solutionName Hunting Query $global:huntingQueryCounter";
                             location   = "[parameters('workspace-location')]";
                             properties = [PSCustomObject] @{
@@ -1993,7 +2250,17 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         $huntingQueryDescription = ""
                         if ($yaml.description) {
-                            $huntingQueryDescription = $yaml.description.substring(1, $yaml.description.length - 3)
+                            #$huntingQueryDescription = $yaml.description.substring(1, $yaml.description.length - 3)
+                            $huntingQueryDescription = $yaml.description.Trim();
+                            if($huntingQueryDescription.StartsWith("'"))
+                            {
+                                $huntingQueryDescription = $huntingQueryDescription.substring(1, $huntingQueryDescription.length-1)
+                            }
+
+                            if($huntingQueryDescription.EndsWith("'"))
+                            {
+                                $huntingQueryDescription = $huntingQueryDescription.substring(0, $huntingQueryDescription.length-1)
+                            }
                             $descriptionObj = [PSCustomObject]@{
                                 name  = "description";
                                 value = $huntingQueryDescription
@@ -2024,19 +2291,18 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         }
 
                         if($contentToImport.TemplateSpec) {
-
-                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQueryId$global:huntingQueryCounter" -NotePropertyValue "[resourceId('Microsoft.OperationalInsights/savedSearches', variables('_huntingQuerycontentId$global:huntingQueryCounter'))]"
-
                             if ($contentResourceDetails.apiVersion -eq '3.0.0')
                             {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQueryTemplateSpecName$global:huntingQueryCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-hq-',uniquestring(variables('_huntingQuerycontentId$global:huntingQueryCounter'))),variables('huntingQueryVersion$global:huntingQueryCounter')))]"
+                                $objHuntingQueryVariables | Add-Member -NotePropertyName "huntingQueryTemplateSpecName$global:huntingQueryCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-hq-',uniquestring('$($huntingQueryContentIdValue)')))]"
                             }
                             else 
                             {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQueryTemplateSpecName$global:huntingQueryCounter" -NotePropertyValue "[concat(parameters('workspace'),'-hq-',uniquestring(variables('_huntingQuerycontentId$global:huntingQueryCounter')))]"
+                                $objHuntingQueryVariables | Add-Member -NotePropertyName "huntingQueryTemplateSpecName$global:huntingQueryCounter" -NotePropertyValue "[concat(parameters('workspace'),'-hq-',uniquestring('$($huntingQueryContentIdValue)'))]"
                             }
 
-                            if (!$global:baseMainTemplate.variables.workspaceResourceId) {
+                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "huntingQueryObject$global:huntingQueryCounter" -NotePropertyValue $objHuntingQueryVariables
+
+                            if (!$global:baseMainTemplate.variables.workspaceResourceId -and $contentResourceDetails.contentSchemaVersion -ne '3.0.0') {
                                 $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workspaceResourceId" -NotePropertyValue "[resourceId('microsoft.OperationalInsights/Workspaces', parameters('workspace'))]"
                             }
 
@@ -2044,8 +2310,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             {
                                 $baseHuntingQueryTemplateSpec = [PSCustomObject]@{
                                     type       = $contentResourceDetails.resourcetype; # "Microsoft.Resources/templateSpecs";
-                                    apiVersion = "2022-02-01";
-                                    name       = "[variables('huntingQueryTemplateSpecName$global:huntingQueryCounter')]";
+                                    apiVersion = $contentResourceDetails.templateSpecsApiVersion; #"2022-02-01";
+                                    name       = "[variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryTemplateSpecName$global:huntingQueryCounter]";
                                     location   = "[parameters('workspace-location')]";
                                     tags       = [PSCustomObject]@{
                                         "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -2077,14 +2343,14 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                             $huntingQueryMetadata = [PSCustomObject]@{
                                 type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                                apiVersion = "2022-01-01-preview";
-                                name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('HuntingQuery-', last(split(variables('huntingQueryId$global:huntingQueryCounter'),'/'))))]";
+                                apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion; #"2022-01-01-preview";
+                                name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('HuntingQuery-', last(split(resourceId('Microsoft.OperationalInsights/savedSearches', variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter),'/'))))]";
                                 properties = [PSCustomObject]@{
                                     description = "$($solutionName) Hunting Query $global:huntingQueryCounter";
-                                    parentId  = "[variables('huntingQueryId$global:huntingQueryCounter')]";
-                                    contentId = "[variables('_huntingQuerycontentId$global:huntingQueryCounter')]";
+                                    parentId  = "[resourceId('Microsoft.OperationalInsights/savedSearches', variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter)]";
+                                    contentId = "[variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter]";
                                     kind      = "HuntingQuery";
-                                    version   = "[variables('huntingQueryVersion$global:huntingQueryCounter')]";
+                                    version   = "[variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryVersion$global:huntingQueryCounter]";
                                     source    = [PSCustomObject]@{
                                         kind     = "Solution";
                                         name     = $contentToImport.Name;
@@ -2098,8 +2364,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             # Add templateSpecs/versions resource to hold actual content
                             $huntingQueryTemplateSpecContent = [PSCustomObject]@{
                                 type       = $contentResourceDetails.subtype; # "Microsoft.Resources/templateSpecs/versions";
-                                apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
-                                name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('huntingQueryTemplateSpecName$global:huntingQueryCounter')]" : "[concat(variables('huntingQueryTemplateSpecName$global:huntingQueryCounter'),'/',variables('huntingQueryVersion$global:huntingQueryCounter'))]";
+                                apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
+                                name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryTemplateSpecName$global:huntingQueryCounter]" : "[concat(variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryTemplateSpecName$global:huntingQueryCounter,'/',variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryVersion$global:huntingQueryCounter]";
                                 location   = "[parameters('workspace-location')]";
                                 tags       = [PSCustomObject]@{
                                     "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -2108,13 +2374,13 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                                 dependsOn  = $contentResourceDetails.apiVersion -eq '3.0.0' ? @(
                                 "$($contentResourceDetails.dependsOn)") : @(
-                                    "$($contentResourceDetails.dependsOn), variables('huntingQueryTemplateSpecName$global:huntingQueryCounter'))]"
+                                    "$($contentResourceDetails.dependsOn), variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryTemplateSpecName$global:huntingQueryCounter)]"
                                 );
                                 properties = [PSCustomObject]@{
                                     description  = "$($fileName) Hunting Query with template version $($contentToImport.Version)";
                                     mainTemplate = [PSCustomObject]@{
                                         '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#";
-                                        contentVersion = "[variables('huntingQueryVersion$global:huntingQueryCounter')]";
+                                        contentVersion = "[variables('huntingQueryObject$global:huntingQueryCounter').huntingQueryVersion$global:huntingQueryCounter]";
                                         parameters     = [PSCustomObject]@{};
                                         variables      = [PSCustomObject]@{};
                                         resources      = @(
@@ -2129,14 +2395,15 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             if ($contentResourceDetails.apiVersion -eq '3.0.0')
                             {
                                 $huntingQueryTemplateSpecContent = SetContentTemplateDefaultValuesToProperties -templateSpecResourceObj $huntingQueryTemplateSpecContent
-                                $huntingQueryTemplateSpecContent.properties.contentId = "[variables('_huntingQuerycontentId$global:huntingQueryCounter')]"
+                                $huntingQueryTemplateSpecContent.properties.contentId = "[variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter]"
                                 $huntingQueryTemplateSpecContent.properties.contentKind = "HuntingQuery"
                                 $huntingQueryTemplateSpecContent.properties.displayName = $yaml.name
 
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_huntingQuerycontentProductId$global:huntingQueryCounter" -NotePropertyValue "[concat(take(variables('_solutionId'),50),'-','hq','-', uniqueString(concat(variables('_solutionId'),'-','HuntingQuery','-',variables('_huntingQuerycontentId$global:huntingQueryCounter'),'-', variables('huntingQueryVersion$global:huntingQueryCounter'))))]"
-				$huntingQueryTemplateSpecContent.properties.contentProductId = "[variables('_huntingQuerycontentProductId$global:huntingQueryCounter')]"
-                                $huntingQueryTemplateSpecContent.properties.id = "[variables('_huntingQuerycontentProductId$global:huntingQueryCounter')]"
-                                $huntingQueryTemplateSpecContent.properties.version = "[variables('huntingQueryVersion$global:huntingQueryCounter')]"
+                                $huntingQueryContentProductIdValue = "[concat(take(variables('_solutionId'),50),'-','hq','-', uniqueString(concat(variables('_solutionId'),'-','HuntingQuery','-',variables('huntingQueryObject$global:huntingQueryCounter')._huntingQuerycontentId$global:huntingQueryCounter,'-', '$($calculatedHuntingQueryVersion)')))]"
+                                
+				$huntingQueryTemplateSpecContent.properties.contentProductId = "$huntingQueryContentProductIdValue"
+                                $huntingQueryTemplateSpecContent.properties.id = "$huntingQueryContentProductIdValue"
+                                $huntingQueryTemplateSpecContent.properties.version = "$calculatedHuntingQueryVersion"
                                 $huntingQueryTemplateSpecContent.PSObject.Properties.Remove('tags')
                             }
                             $global:baseMainTemplate.resources += $huntingQueryTemplateSpecContent
@@ -2188,7 +2455,6 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
     function GenerateAlertRule($file, $contentResourceDetails)
     {
-        
                         # If yaml and not hunting query, process as Alert Rule
                         Write-Host "Generating Alert Rule using $file"
                         if ($global:analyticRuleCounter -eq 1) {
@@ -2247,15 +2513,19 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             throw "The file $fileName has metadata with source -> kind = Community | Standalone. Please remove it so that it can be packaged as a solution."
                         }
 
-                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRuleVersion$global:analyticRuleCounter" -NotePropertyValue (($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0")
-                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRulecontentId$global:analyticRuleCounter" -NotePropertyValue "$($yaml.id)"
-                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_analyticRulecontentId$global:analyticRuleCounter" -NotePropertyValue "[variables('analyticRulecontentId$global:analyticRuleCounter')]"
+                        $calculatedAnalyticRuleVersion = ($null -ne $yaml.version) ? "$($yaml.version)" : "1.0.0"
+                        $objAnalyticRulesVariables = [pscustomobject]@{}
+                        $objAnalyticRulesVariables | Add-Member -NotePropertyName "analyticRuleVersion$global:analyticRuleCounter" -NotePropertyValue "$calculatedAnalyticRuleVersion"
+
+                        $objAnalyticRulesVariables | Add-Member -NotePropertyName "_analyticRulecontentId$global:analyticRuleCounter" -NotePropertyValue "$($yaml.id)"
+
                         $global:DependencyCriteria += [PSCustomObject]@{
                             kind      = "AnalyticsRule";
-                            contentId = "[variables('analyticRulecontentId$global:analyticRuleCounter')]";
+                            contentId = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentId$global:analyticRuleCounter]";
                             #post bug bash ,remove this below comments!
-                            version   = "[variables('analyticRuleVersion$global:analyticRuleCounter')]";
+                            version   = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleVersion$global:analyticRuleCounter]";
                         };
+
                         # Copy all directly transposable properties
                         foreach ($yamlProperty in $yamlPropertiesToCopyFrom) {
                             $index = $yamlPropertiesToCopyFrom.IndexOf($yamlProperty)
@@ -2297,12 +2567,44 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             }
                             $alertRule | Add-Member -NotePropertyName tactics -NotePropertyValue $yaml.tactics # Add Tactics property if exists
                         }
+
+                        $subtechniques = @()
+                        $techniques = @()
+
                         if ($yaml.relevantTechniques -and ($yaml.relevantTechniques.Count -gt 0) ) {
                             if ($yaml.relevantTechniques -match ' ') {
                                 $yaml.relevantTechniques = $yaml.relevantTechniques -replace ' ', ''
                             }
-                            $alertRule | Add-Member -NotePropertyName techniques -NotePropertyValue ([array]($yaml.relevantTechniques | ForEach-Object { ($_ -split "\.")[0] })) # Add relevantTechniques property if exists
+                        
+                            foreach ($item in [array]($yaml.relevantTechniques)) {
+                                if ($item.contains('.')) {
+                                    if (!$subtechniques.Contains($item)) {
+                                        $subtechniques += $item
+                                    }
+                                }
+
+                                if (!$techniques.Contains($item)) {
+                                    $techniques += ($item -split "\.")[0]
+                                }
+                            }
                         }
+
+                        if ($subtechniques.Count -gt 0) {
+                            Write-Host "Has Sub-Techniques for Analytic rule file name $fileName"
+                            $alertRule | Add-Member -NotePropertyName subTechniques -NotePropertyValue ([array]($subtechniques))
+                        }
+
+                        if ($techniques.Count -gt 0) {
+                            Write-Host "Has Techniques for Analytic rule file name $fileName"
+                            $alertRule | Add-Member -NotePropertyName techniques -NotePropertyValue ([array]($techniques))
+                        }
+
+                        # if ($yaml.relevantTechniques -and ($yaml.relevantTechniques.Count -gt 0) ) {
+                        #     if ($yaml.relevantTechniques -match ' ') {
+                        #         $yaml.relevantTechniques = $yaml.relevantTechniques -replace ' ', ''
+                        #     }
+                        #     $alertRule | Add-Member -NotePropertyName techniques -NotePropertyValue ([array]($yaml.relevantTechniques | ForEach-Object { ($_ -split "\.")[0] })) # Add relevantTechniques property if exists
+                        # }
                         $alertRule.description = $yaml.description.TrimEnd() #remove newlines at the end of the string if there are any.
                         if ($alertRule.description.StartsWith("'") -or $alertRule.description.StartsWith('"')) {
                             # Remove surrounding single-quotes (') from YAML block literal string, in case the string starts with a single quote in Yaml.
@@ -2361,7 +2663,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                         $newAnalyticRule = [PSCustomObject]@{
                             type       = $contentToImport.TemplateSpec ? "Microsoft.SecurityInsights/AlertRuleTemplates" : "Microsoft.OperationalInsights/workspaces/providers/alertRules";
                             name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',parameters('analytic$global:analyticRuleCounter-id'))]";
-                            apiVersion = "2022-04-01-preview";
+                            apiVersion = $contentResourceDetails.alertRuleApiVersion; #"2022-04-01-preview";
                             kind       =  "$($yaml.kind)";
                             location   = "[parameters('workspace-location')]";
                             properties = $alertRule;
@@ -2369,18 +2671,18 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                         if($contentToImport.TemplateSpec) {
 
-                            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRuleId$global:analyticRuleCounter" -NotePropertyValue "[resourceId('Microsoft.SecurityInsights/AlertRuleTemplates', variables('analyticRulecontentId$global:analyticRuleCounter'))]"
+                            $objAnalyticRulesVariables | Add-Member -NotePropertyName "analyticRuleId$global:analyticRuleCounter" -NotePropertyValue "[resourceId('Microsoft.SecurityInsights/AlertRuleTemplates', '$($yaml.id)')]"
 
                             if ($contentResourceDetails.apiVersion -eq '3.0.0')
                             {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRuleTemplateSpecName$global:analyticRuleCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-ar-',uniquestring(variables('_analyticRulecontentId$global:analyticRuleCounter'))),variables('analyticRuleVersion$global:analyticRuleCounter')))]"
+                                $objAnalyticRulesVariables | Add-Member -NotePropertyName "analyticRuleTemplateSpecName$global:analyticRuleCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-ar-',uniquestring('$($yaml.id)')))]"
                             }
                             else 
                             {
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRuleTemplateSpecName$global:analyticRuleCounter" -NotePropertyValue "[concat(parameters('workspace'),'-ar-',uniquestring(variables('_analyticRulecontentId$global:analyticRuleCounter')))]"
+                                $objAnalyticRulesVariables | Add-Member -NotePropertyName "analyticRuleTemplateSpecName$global:analyticRuleCounter" -NotePropertyValue "[concat(parameters('workspace'),'-ar-',uniquestring('$($yaml.id)'))]"
                             }
 
-                            if (!$global:baseMainTemplate.variables.workspaceResourceId) {
+                            if (!$global:baseMainTemplate.variables.workspaceResourceId -and $contentResourceDetails.contentSchemaVersion -ne '3.0.0') {
                                 $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workspaceResourceId" -NotePropertyValue "[resourceId('microsoft.OperationalInsights/Workspaces', parameters('workspace'))]"
                             }
                             
@@ -2388,8 +2690,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             {
                                 $baseAnalyticRuleTemplateSpec = [PSCustomObject]@{
                                     type       = $contentResourceDetails.resourcetype; # "Microsoft.Resources/templateSpecs";
-                                    apiVersion = "2022-02-01";
-                                    name       = "[variables('analyticRuleTemplateSpecName$global:analyticRuleCounter')]";
+                                    apiVersion = $contentResourceDetails.templateSpecsApiVersion; #"2022-02-01";
+                                    name       = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleTemplateSpecName$global:analyticRuleCounter]";
                                     location   = "[parameters('workspace-location')]";
                                     tags       = [PSCustomObject]@{
                                         "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -2408,7 +2710,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                                 $global:baseMainTemplate.resources += $baseAnalyticRuleTemplateSpec
                             }
 
-                            $newAnalyticRule.name = "[variables('analyticRulecontentId$global:analyticRuleCounter')]"
+                            $newAnalyticRule.name = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentId$global:analyticRuleCounter]"
                             
                             $author = $contentToImport.Author.Split(" - ");
                             $authorDetails = [PSCustomObject]@{
@@ -2422,15 +2724,15 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                             $analyticRuleMetadata = [PSCustomObject]@{
                                 type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-                                apiVersion = "2022-01-01-preview";
-                                name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('AnalyticsRule-', last(split(variables('analyticRuleId$global:analyticRuleCounter'),'/'))))]";
+                                apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion; #"2022-01-01-preview";
+                                name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('AnalyticsRule-', last(split(variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleId$global:analyticRuleCounter,'/'))))]";
                                 properties = [PSCustomObject]@{
                                     description = "$($solutionName) Analytics Rule $global:analyticRuleCounter";
-                                    parentId  = "[variables('analyticRuleId$global:analyticRuleCounter')]";
-                                    contentId = "[variables('_analyticRulecontentId$global:analyticRuleCounter')]";
+                                    parentId  = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleId$global:analyticRuleCounter]";
+                                    contentId = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentId$global:analyticRuleCounter]";
                                     kind      = "AnalyticsRule";
                                     # Need to remove the below assigned property for the yaml version after bug bash
-                                    version   = "[variables('analyticRuleVersion$global:analyticRuleCounter')]";
+                                    version   = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleVersion$global:analyticRuleCounter]";
                                     source    = [PSCustomObject]@{
                                         kind     = "Solution";
                                         name     = $contentToImport.Name;
@@ -2444,8 +2746,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             # Add templateSpecs/versions resource to hold actual content
                             $analyticRuleTemplateSpecContent = [PSCustomObject]@{
                                 type       = $contentResourceDetails.subtype; # "Microsoft.Resources/templateSpecs/versions";
-                                apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
-                                name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('analyticRuleTemplateSpecName$global:analyticRuleCounter')]" : "[concat(variables('analyticRuleTemplateSpecName$global:analyticRuleCounter'),'/',variables('analyticRuleVersion$global:analyticRuleCounter'))]";
+                                apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
+                                name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleTemplateSpecName$global:analyticRuleCounter]" : "[concat(variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleTemplateSpecName$global:analyticRuleCounter,'/',variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleVersion$global:analyticRuleCounter)]";
                                 location   = "[parameters('workspace-location')]";
                                 tags       = [PSCustomObject]@{
                                     "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -2454,13 +2756,13 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                                 dependsOn  = $contentResourceDetails.apiVersion -eq '3.0.0' ? @(
                                 "$($contentResourceDetails.dependsOn)") : @(
-                                    "$($contentResourceDetails.dependsOn), variables('analyticRuleTemplateSpecName$global:analyticRuleCounter'))]"
+                                    "$($contentResourceDetails.dependsOn), variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleTemplateSpecName$global:analyticRuleCounter)]"
                                 );
                                 properties = [PSCustomObject]@{
                                     description  = "$($fileName) Analytics Rule with template version $($contentToImport.Version)";
                                     mainTemplate = [PSCustomObject]@{
                                         '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#";
-                                        contentVersion = "[variables('analyticRuleVersion$global:analyticRuleCounter')]";
+                                        contentVersion = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleVersion$global:analyticRuleCounter]";
                                         parameters     = [PSCustomObject]@{};
                                         variables      = [PSCustomObject]@{};
                                         resources      = @(
@@ -2475,14 +2777,14 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             if ($contentResourceDetails.apiVersion -eq '3.0.0')
                             {
                                 $analyticRuleTemplateSpecContent = SetContentTemplateDefaultValuesToProperties -templateSpecResourceObj $analyticRuleTemplateSpecContent
-                                $analyticRuleTemplateSpecContent.properties.contentId = "[variables('_analyticRulecontentId$global:analyticRuleCounter')]"
+                                $analyticRuleTemplateSpecContent.properties.contentId = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentId$global:analyticRuleCounter]"
                                 $analyticRuleTemplateSpecContent.properties.contentKind = "AnalyticsRule"
                                 $analyticRuleTemplateSpecContent.properties.displayName = $yaml.name
 
-                                $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_analyticRulecontentProductId$global:analyticRuleCounter" -NotePropertyValue "[concat(take(variables('_solutionId'),50),'-','ar','-', uniqueString(concat(variables('_solutionId'),'-','AnalyticsRule','-',variables('_analyticRulecontentId$global:analyticRuleCounter'),'-', variables('analyticRuleVersion$global:analyticRuleCounter'))))]"
-				$analyticRuleTemplateSpecContent.properties.contentProductId = "[variables('_analyticRulecontentProductId$global:analyticRuleCounter')]"
-                                $analyticRuleTemplateSpecContent.properties.id = "[variables('_analyticRulecontentProductId$global:analyticRuleCounter')]"
-                                $analyticRuleTemplateSpecContent.properties.version = "[variables('analyticRuleVersion$global:analyticRuleCounter')]"
+                                $objAnalyticRulesVariables | Add-Member -NotePropertyName "_analyticRulecontentProductId$global:analyticRuleCounter" -NotePropertyValue "[concat(take(variables('_solutionId'),50),'-','ar','-', uniqueString(concat(variables('_solutionId'),'-','AnalyticsRule','-','$($yaml.id)','-', '$calculatedAnalyticRuleVersion')))]"
+                                $analyticRuleTemplateSpecContent.properties.contentProductId = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentProductId$global:analyticRuleCounter]"
+                                $analyticRuleTemplateSpecContent.properties.id = "[variables('analyticRuleObject$global:analyticRuleCounter')._analyticRulecontentProductId$global:analyticRuleCounter]"
+                                $analyticRuleTemplateSpecContent.properties.version = "[variables('analyticRuleObject$global:analyticRuleCounter').analyticRuleVersion$global:analyticRuleCounter]"
                                 $analyticRuleTemplateSpecContent.PSObject.Properties.Remove('tags')
                             }
                             $global:baseMainTemplate.resources += $analyticRuleTemplateSpecContent
@@ -2491,6 +2793,8 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                             # Add Resource and Parameters to Template
                             $global:baseMainTemplate.resources += $newAnalyticRule
                         }
+
+                        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "analyticRuleObject$global:analyticRuleCounter" -NotePropertyValue $objAnalyticRulesVariables 
 
                         if(!$contentToImport.TemplateSpec)
                         {
@@ -2504,7 +2808,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                     
     }
 
-    function GenerateWatchList($json, $isPipelineRun)
+    function GenerateWatchList($json, $isPipelineRun, $watchListFileName)
     {
         $watchlistData = $json.resources[0]
 
@@ -2568,7 +2872,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                     # Add Watchlist ID to MainTemplate parameters
                     $watchlistIdParameterName = "watchlist$global:watchlistCounter-id"
-                    $watchlistIdParameter = [PSCustomObject] @{ type = "string"; defaultValue = "$($watchlistData.properties.watchlistAlias)"; minLength = 1; metadata = [PSCustomObject] @{ description = "Unique id for the watchlist" }; }
+                    $watchlistIdParameter = [PSCustomObject] @{ type = "string"; defaultValue = "$watchListFileName"; minLength = 1; metadata = [PSCustomObject] @{ description = "Unique id for the watchlist" }; }
                     $global:baseMainTemplate.parameters | Add-Member -MemberType NoteProperty -Name $watchlistIdParameterName -Value $watchlistIdParameter
 
                     # Replace watchlist resource id
@@ -2582,7 +2886,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
     }
 
 
-    function GenerateSavedSearches($json)
+    function GenerateSavedSearches($json, $contentResourceDetails)
     {
         $isStandardTemplate = $false
                     $searchData = $json # Assume input is basic array of SavedSearches to start
@@ -2603,7 +2907,7 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
                             $savedSearchResource = [PSCustomObject]@{
                                 type       = "Microsoft.OperationalInsights/workspaces/savedSearches";
-                                apiVersion = "2020-08-01";
+                                apiVersion =  $contentResourceDetails.savedSearchesApiVersion; #"2020-08-01";
                                 name       = "[concat(parameters('workspace'),'/',parameters('$savedSearchIdParameterName'))]";
                                 properties = [PSCustomObject]@{
                                     category      = $search.properties.category;
@@ -2645,7 +2949,30 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                 Write-Output "Missing arm-ttk validations. Downloading module..."
                 Invoke-Expression "$armTtkFolder/download-arm-ttk.ps1"
             }
-            Invoke-Expression "$armTtkFolder/run-arm-ttk-in-automation.ps1 '$solutionName'"
+            Invoke-Expression "& '$armTtkFolder/run-arm-ttk-in-automation.ps1' '$solutionName'"
+        }
+    }
+
+    # this function is to check if maintemplate and createUi files in package folder is valid or not
+    function CheckJsonIsValid($solutionFolderBasePath)
+    {
+        $packageFolderPath = "$solutionFolderBasePath\Package\*.json"
+        if ((Test-Path -Path "$packageFolderPath")) {
+            [array]$packageFolderFiles = Get-ChildItem "$packageFolderPath" -Recurse| select -expand fullname
+            Write-Host "************Validating if Package Json files are valid or not***************"
+
+            foreach ($filePath in $packageFolderFiles)
+            {
+                $isValid = Get-Content "$filePath" -Raw | Test-Json -ErrorAction SilentlyContinue
+                if ($isValid)
+                {
+                    Write-Host "File $filePath is a valid Json file!"
+                }
+                else
+                {
+                    Write-Host "File $filePath is Not a valid Json file!"
+                }
+            }
         }
     }
 
@@ -2663,10 +2990,19 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
         if ($contentResourceDetails.apiVersion -eq '3.0.0')
         {
             $updatecontentpackage = $baseMainTemplate.resources | Where-Object {$_.type -eq "Microsoft.OperationalInsights/workspaces/providers/contentPackages"}
-            $descriptionHtml = $global:baseCreateUiDefinition.parameters.config.basics.description -replace "{{Logo}}\n\n", ""
-            $md = $descriptionHtml | ConvertFrom-Markdown
-            $updatecontentpackage.properties.descriptionHtml = $md.Html
-            $updatecontentpackage.properties.icon = $contentToImport.Logo
+            if ($updatecontentpackage -is [System.Object[]]) {
+                foreach($contentPackageItem in $updatecontentpackage) {
+                    $descriptionHtml = $global:baseCreateUiDefinition.parameters.config.basics.description -replace "{{Logo}}\n\n", ""
+                    $md = $descriptionHtml | ConvertFrom-Markdown
+                    $contentPackageItem.properties.descriptionHtml = $md.Html
+                    $contentPackageItem.properties.icon = $contentToImport.Logo
+                }
+            } else {
+                $descriptionHtml = $global:baseCreateUiDefinition.parameters.config.basics.description -replace "{{Logo}}\n\n", ""
+                $md = $descriptionHtml | ConvertFrom-Markdown
+                $updatecontentpackage.properties.descriptionHtml = $md.Html
+                $updatecontentpackage.properties.icon = $contentToImport.Logo
+            }
         }
         # Update Logo in CreateUiDefinition Description
         if ($contentToImport.Logo) {
@@ -2695,17 +3031,23 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
 
         try {
             $baseMainTemplate | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $mainTemplateOutputPath -Encoding utf8
+
+            # create testParameters json file which will be used for test case automation
+            $testParametersOutputPath = "$solutionFolder/testParameters.json"
+            $baseMainTemplate.parameters | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $testParametersOutputPath -Encoding utf8
         }
         catch {
             Write-Host "Failed to write output file $mainTemplateOutputPath" -ForegroundColor Red
             break;
         }
+
         try {
             # Sort UI Steps before writing to file
             $createUiDefinitionOrder = "dataconnectors", "parsers", "workbooks", "analytics", "huntingqueries", "watchlists", "playbooks"
             $global:baseCreateUiDefinition.parameters.steps = $global:baseCreateUiDefinition.parameters.steps | Sort-Object { $createUiDefinitionOrder.IndexOf($_.name) }
             # Ensure single-step UI Definitions have proper type for steps
-            if ($($global:baseCreateUiDefinition.parameters.steps).GetType() -ne [System.Object[]]) {
+            if ($null -ne $global:baseCreateUiDefinition.parameters.steps -and 
+            $($global:baseCreateUiDefinition.parameters.steps).GetType() -ne [System.Object[]]) {
                 $global:baseCreateUiDefinition.parameters.steps = @($global:baseCreateUiDefinition.parameters.steps)
             }
             $global:baseCreateUiDefinition | ConvertTo-Json -Depth $jsonConversionDepth | Out-File $createUiDefinitionOutputPath -Encoding utf8
@@ -2722,7 +3064,12 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
         else {
             $zipPackageName = "$calculatedBuildPipelinePackageVersion" + ".zip"
         }
-        Compress-Archive -Path "$solutionFolder/*" -DestinationPath "$solutionFolder/$zipPackageName" -Force
+
+        $compress = @{
+            Path = "$solutionFolder/createUiDefinition.json", "$solutionFolder/mainTemplate.json"
+            DestinationPath = "$solutionFolder/$zipPackageName"
+        }
+        Compress-Archive @compress -Force
     }
 
     function global:GetContentTemplateDefaultValues()
@@ -2779,12 +3126,17 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                     'metadata' = "Microsoft.OperationalInsights/workspaces/providers/contentPackages"
                     'contentSchemaVersion' = '3.0.0'
                     'apiVersion' = '3.0.0'
+
+                    'metadataApiVersion' = '2023-04-01-preview'
+                    'templateSpecsVersionApiVersion' = '2023-04-01-preview'
+
                     'resources' = @("Microsoft.OperationalInsights/workspaces/providers/dataConnectors",
                                     "Microsoft.OperationalInsights/workspaces/providers/metadata",
                                     "Microsoft.OperationalInsights/workspaces/savedSearches",
                                     "Microsoft.OperationalInsights/workspaces/providers/Watchlists",
                                     "Microsoft.OperationalInsights/workspaces/providers/contentTemplates",
-                                    "Microsoft.OperationalInsights/workspaces/providers/contentPackages")
+                                    "Microsoft.OperationalInsights/workspaces/providers/contentPackages",
+                                    "Microsoft.OperationalInsights/workspaces/providers/dataConnectorDefinitions")
                     }
             }
             elseif ($version.Major -eq 2)
@@ -2796,6 +3148,10 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
                     'metadata' = "Microsoft.OperationalInsights/workspaces/providers/metadata"
                     'contentSchemaVersion' = '2.0.0'
                     'apiVersion' = '2.0.0'
+
+                    'metadataApiVersion' = '2022-01-01-preview'
+                    'templateSpecsVersionApiVersion' = '2022-02-01'
+
                     'resources' = @("Microsoft.OperationalInsights/workspaces/providers/dataConnectors",
                                     "Microsoft.OperationalInsights/workspaces/providers/metadata",
                                     "Microsoft.OperationalInsights/workspaces/savedSearches",
@@ -2808,7 +3164,20 @@ function PrepareSolutionMetadata($solutionMetadataRawContent, $contentResourceDe
             {
                 Write-Host "Returning Empty dictionary object because the version information is given as null or empty" -ForegroundColor Red
                 return $dict 
-            } 
+            }
+
+            if ($null -ne $dict)
+            {
+                # ADD COMMON API VERSION
+                $dict.Add('templateSpecsApiVersion', '2022-02-01')
+                $dict.Add('dataConnectorsApiVersion', '2021-03-01-preview')
+                $dict.Add('huntingOperationalInsightsWorkspacesApiVersion', '2021-06-01')
+                $dict.Add('parserOperationalInsightsWorkspacesApiVersion', '2020-08-01')
+                $dict.Add('savedSearchesApiVersion', '2022-10-01')
+                $dict.Add('alertRuleApiVersion', '2022-04-01-preview')
+                $dict.Add('commonResourceMetadataApiVersion', '2022-01-01-preview')
+                $dict.Add('insightsWorkbookApiVersion', '2021-08-01')
+            }
 
             return $dict
         }
@@ -2922,10 +3291,10 @@ function Base32Encode([uint32]$charValue)
         return $sb.ToString()
 }
 
-function addTemplateSpecParserResource($content,$yaml,$isyaml)
+function addTemplateSpecParserResource($content,$yaml,$isyaml, $contentResourceDetails)
 {
         # Add workspace resource ID if not available
-        if (!$global:baseMainTemplate.variables.workspaceResourceId) {
+        if (!$global:baseMainTemplate.variables.workspaceResourceId -and $contentResourceDetails.contentSchemaVersion -ne '3.0.0') {
             $global:baseMainTemplate.variables | Add-Member -NotePropertyName "workspaceResourceId" -NotePropertyValue "[resourceId('microsoft.OperationalInsights/Workspaces', parameters('workspace'))]"
         }
 
@@ -2934,8 +3303,8 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
             # Add base templateSpec
             $baseParserTemplateSpec = [PSCustomObject]@{
                 type       = "Microsoft.Resources/templateSpecs";
-                apiVersion = "2022-02-01";
-                name       = "[variables('parserTemplateSpecName$global:parserCounter')]";
+                apiVersion = $contentResourceDetails.templateSpecsApiVersion;  #"2022-02-01";
+                name       = "[variables('parserObject$global:parserCounter').parserTemplateSpecName$global:parserCounter]";
                 location   = "[parameters('workspace-location')]";
                 tags       = [PSCustomObject]@{
                     "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -2950,8 +3319,8 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
         }
         # Parser Content
         $parserContent = [PSCustomObject]@{
-            name       = "[variables('_parserName$global:parserCounter')]";
-            apiVersion = "2020-08-01";
+            name       = "[variables('parserObject$global:parserCounter')._parserName$global:parserCounter]";
+            apiVersion = $contentResourceDetails.savedSearchesApiVersion; #"2020-08-01";
             type       = "Microsoft.OperationalInsights/workspaces/savedSearches";
             location   = "[parameters('workspace-location')]";
             properties = [PSCustomObject]@{
@@ -2960,7 +3329,7 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
                 category      = $isyaml ? "$($yaml.Category)" : "Samples"
                 functionAlias = "$($displayDetails.functionAlias)"
                 query         = $isyaml ? "$($yaml.FunctionQuery)" : "$content"
-                functionParameters = $isyaml ? "$(ConvertHashTo-StringData $yaml.FunctionParams)" : ""
+                functionParameters = $isyaml -and $null -ne $yaml.FunctionParams ? "$(ConvertHashTo-StringData $yaml.FunctionParams)" : ""
                 version       = $isyaml ? 2 : 1
                 tags          = @([PSCustomObject]@{
                     "name"  = "description"
@@ -2979,16 +3348,16 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
         }
         $parserMetadata = [PSCustomObject]@{
             type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-            apiVersion = "2022-01-01-preview";
-            name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Parser-', last(split(variables('_parserId$global:parserCounter'),'/'))))]";
+            apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion; #"2022-01-01-preview";
+            name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Parser-', last(split(variables('parserObject$global:parserCounter')._parserId$global:parserCounter,'/'))))]";
             dependsOn  =  @(
-                "[variables('_parserName$global:parserCounter')]"
+                "[variables('parserObject$global:parserCounter')._parserId$global:parserCounter]"
             );
             properties = [PSCustomObject]@{
-                parentId  = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), variables('parserName$global:parserCounter'))]"
-                contentId = "[variables('_parserContentId$global:parserCounter')]";
+                parentId  = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), '$($displayDetails.displayName)')]"
+                contentId = "[variables('parserObject$global:parserCounter').parserContentId$global:parserCounter]";
                 kind      = "Parser";
-                version   = "[variables('parserVersion$global:parserCounter')]";
+                version   = "[variables('parserObject$global:parserCounter').parserVersion$global:parserCounter]";
                 source    = [PSCustomObject]@{
                     name     = $contentToImport.Name;
                     kind     = "Solution";
@@ -3002,8 +3371,8 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
         # Add templateSpecs/versions resource to hold actual content
         $parserTemplateSpecContent = [PSCustomObject]@{
             type       =  $contentResourceDetails.subtype; #"Microsoft.Resources/templateSpecs/versions";
-            apiVersion = $contentResourceDetails.apiVersion -eq '3.0.0' ? "2023-04-01-preview" : "2022-02-01";
-            name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('parserTemplateSpecName$global:parserCounter')]" : "[concat(variables('parserTemplateSpecName$global:parserCounter'),'/',variables('parserVersion$global:parserCounter'))]";
+            apiVersion = $contentResourceDetails.templateSpecsVersionApiVersion;
+            name       = $contentResourceDetails.apiVersion -eq '3.0.0' ? "[variables('parserObject$global:parserCounter').parserTemplateSpecName$global:parserCounter]" : "[concat(variables('parserObject$global:parserCounter').parserTemplateSpecName$global:parserCounter,'/',variables('parserObject$global:parserCounter').parserVersion$global:parserCounter)]";
             location   = "[parameters('workspace-location')]";
             tags       = [PSCustomObject]@{
                 "hidden-sentinelWorkspaceId" = "[variables('workspaceResourceId')]";
@@ -3011,13 +3380,13 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
             };
             dependsOn  = $contentResourceDetails.apiVersion -eq '3.0.0' ? @(
                                 "$($contentResourceDetails.dependsOn)") : @(
-                "[resourceId('Microsoft.Resources/templateSpecs', variables('parserTemplateSpecName$global:parserCounter'))]"
+                "[resourceId('Microsoft.Resources/templateSpecs', variables('parserObject$global:parserCounter').parserTemplateSpecName$global:parserCounter)]"
             );
             properties = [PSCustomObject]@{
                 description  = "$($fileName) Data Parser with template version $($contentToImport.Version)";
                 mainTemplate = [PSCustomObject]@{
                     '$schema'      = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#";
-                    contentVersion = "[variables('parserVersion$global:parserCounter')]";
+                    contentVersion = "[variables('parserObject$global:parserCounter').parserVersion$global:parserCounter]";
                     parameters     = [PSCustomObject]@{};
                     variables      = [PSCustomObject]@{};
                     resources      = @(
@@ -3033,14 +3402,17 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
         if ($contentResourceDetails.apiVersion -eq '3.0.0')
         {
             $parserTemplateSpecContent = SetContentTemplateDefaultValuesToProperties -templateSpecResourceObj $parserTemplateSpecContent
-            $parserTemplateSpecContent.properties.contentId = "[variables('_parserContentId$global:parserCounter')]"
+            $parserTemplateSpecContent.properties.contentId = "[variables('parserObject$global:parserCounter').parserContentId$global:parserCounter]"
             $parserTemplateSpecContent.properties.contentKind = "Parser"
             $parserTemplateSpecContent.properties.displayName = "$($displayDetails.displayName)"
 
-            $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parsercontentProductId$global:parserCounter" -NotePropertyValue "[concat(take(variables('_solutionId'),50),'-','$($ContentKindDict.ContainsKey("Parser") ? $ContentKindDict["Parser"] : '')','-', uniqueString(concat(variables('_solutionId'),'-','Parser','-',variables('_parserContentId$global:parserCounter'),'-', variables('parserVersion$global:parserCounter'))))]"
-	    $parserTemplateSpecContent.properties.contentProductId = "[variables('_parsercontentProductId$global:parserCounter')]"
-            $parserTemplateSpecContent.properties.id = "[variables('_parsercontentProductId$global:parserCounter')]"
-            $parserTemplateSpecContent.properties.version = "[variables('parserVersion$global:parserCounter')]"
+            #$global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parsercontentProductId$global:parserCounter" -NotePropertyValue "[concat(take(variables('_solutionId'),50),'-','$($ContentKindDict.ContainsKey("Parser") ? $ContentKindDict["Parser"] : '')','-', uniqueString(concat(variables('_solutionId'),'-','Parser','-',variables('parserObject$global:parserCounter').parserContentId$global:parserCounter,'-', '$($global:parserVersion)')))]"
+            
+            $parserContentProductIdValue = "[concat(take(variables('_solutionId'),50),'-','$($ContentKindDict.ContainsKey("Parser") ? $ContentKindDict["Parser"] : '')','-', uniqueString(concat(variables('_solutionId'),'-','Parser','-',variables('parserObject$global:parserCounter').parserContentId$global:parserCounter,'-', '$($global:parserVersion)')))]"
+            
+            $parserTemplateSpecContent.properties.contentProductId = "$parserContentProductIdValue"
+            $parserTemplateSpecContent.properties.id = "$parserContentProductIdValue"
+            $parserTemplateSpecContent.properties.version = "[variables('parserObject$global:parserCounter').parserVersion$global:parserCounter]"
             $parserTemplateSpecContent.PSObject.Properties.Remove('tags')
         }
         
@@ -3048,8 +3420,8 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
 
         $parserObj = [PSCustomObject] @{
             type       = "Microsoft.OperationalInsights/workspaces/savedSearches";
-            apiVersion = "2020-08-01";
-            name       = "[variables('_parserName$parserCounter')]";
+            apiVersion = $contentResourceDetails.savedSearchesApiVersion; #"2020-08-01";
+            name       = "[variables('parserObject$global:parserCounter')._parserName$global:parserCounter]";
             location   = "[parameters('workspace-location')]";
             properties = [PSCustomObject] @{
                 eTag          = "*"
@@ -3057,7 +3429,7 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
                 category      = $isyaml ? "$($yaml.Category)" :"Samples"
                 functionAlias = "$($displayDetails.functionAlias)"
                 query         = $isyaml ? "$($yaml.FunctionQuery)" : "$content"
-                functionParameters = $isyaml ? "$(ConvertHashTo-StringData $yaml.FunctionParams)" : ""
+                functionParameters = $isyaml -and $null -ne $yaml.FunctionParams ? "$(ConvertHashTo-StringData $yaml.FunctionParams)" : ""
                 version       = $isyaml ? 2 : 1
                 tags          = @([PSCustomObject]@{
                     "name"  = "description"
@@ -3070,17 +3442,17 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
 
         $parserMetadata = [PSCustomObject]@{
             type       = "Microsoft.OperationalInsights/workspaces/providers/metadata";
-            apiVersion = "2022-01-01-preview";
+            apiVersion = $contentResourceDetails.commonResourceMetadataApiVersion #"2022-01-01-preview";
             location   = "[parameters('workspace-location')]";
-            name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Parser-', last(split(variables('_parserId$global:parserCounter'),'/'))))]";
+            name       = "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat('Parser-', last(split(variables('parserObject$global:parserCounter')._parserId$global:parserCounter,'/'))))]";
             dependsOn  =  @(
-                "[variables('_parserId$global:parserCounter')]"
+                "[variables('parserObject$global:parserCounter')._parserId$global:parserCounter]"
             );
             properties = [PSCustomObject]@{
-                parentId  = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), variables('parserName$global:parserCounter'))]"
-                contentId = "[variables('_parserContentId$global:parserCounter')]";
+                parentId  = "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), '$($displayDetails.displayName)')]"
+                contentId = "[variables('parserObject$global:parserCounter').parserContentId$global:parserCounter]";
                 kind      = "Parser";
-                version   = "[variables('parserVersion$global:parserCounter')]";
+                version   = "[variables('parserObject$global:parserCounter').parserVersion$global:parserCounter]";
                 source    = [PSCustomObject]@{
                     kind     = "Solution";
                     name     = $contentToImport.Name;
@@ -3096,6 +3468,7 @@ function addTemplateSpecParserResource($content,$yaml,$isyaml)
 
 function generateParserContent($file, $contentToImport, $contentResourceDetails)
 {
+    $objParserVariables = [pscustomobject]@{}
     $solutionName = $contentToImport.name
     if ($global:parserCounter -eq 1 -and $null -eq $global:baseMainTemplate.variables.'workspace-dependency' -and !$contentToImport.TemplateSpec) {
         # Add parser dependency variable once to ensure validation passes.
@@ -3145,41 +3518,46 @@ function generateParserContent($file, $contentToImport, $contentResourceDetails)
     }
     
     $displayDetails = getParserDetails $global:solutionId $yaml $isyaml
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserName$global:parserCounter" -NotePropertyValue "$($displayDetails.name)"
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parserName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'/',variables('parserName$global:parserCounter'))]"
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserId$global:parserCounter" -NotePropertyValue "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), variables('parserName$global:parserCounter'))]"
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parserId$global:parserCounter" -NotePropertyValue "[variables('parserId$global:parserCounter')]"
 
+    $objParserVariables | Add-Member -NotePropertyName "_parserName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'/','$($displayDetails.name)')]"
+
+    $objParserVariables | Add-Member -NotePropertyName "_parserId$global:parserCounter" -NotePropertyValue "[resourceId('Microsoft.OperationalInsights/workspaces/savedSearches', parameters('workspace'), '$($displayDetails.name)')]"
+
+    $functionAlias = ($null -ne $yaml -and $yaml.Count -gt 0) ? $yaml.FunctionName : "$($displayDetails.functionAlias)"
+    $parserContentIdValue = "$($functionAlias)-Parser"
     if ($contentResourceDetails.apiVersion -eq '3.0.0')
     {
-        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserTemplateSpecName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(concat(parameters('workspace'),'-pr-',uniquestring(variables('_parserContentId$global:parserCounter'))),variables('parserVersion$global:parserCounter')))]"
+        $objParserVariables | Add-Member -NotePropertyName "parserTemplateSpecName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'/Microsoft.SecurityInsights/',concat(parameters('workspace'),'-pr-',uniquestring('$($parserContentIdValue)')))]"
     }
     else 
     {
-        $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserTemplateSpecName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'-pr-',uniquestring(variables('_parserContentId$global:parserCounter')))]"
+        $objParserVariables | Add-Member -NotePropertyName "parserTemplateSpecName$global:parserCounter" -NotePropertyValue "[concat(parameters('workspace'),'-pr-',uniquestring('$($parserContentIdValue)'))]"
     }
 
     # Use File Name as Parser Name
-    $functionAlias = ($null -ne $yaml -and $yaml.Count -gt 0) ? $yaml.FunctionName : "$($displayDetails.functionAlias)"
     $global:parserVersion = ($null -ne $yaml -and $yaml.Count -gt 0) ? ($null -eq $yaml.Function.Version ? "1.0.0" : $yaml.Function.Version) : "1.0.0"
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserVersion$global:parserCounter" -NotePropertyValue $global:parserVersion
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserContentId$global:parserCounter" -NotePropertyValue "$($functionAlias)-Parser"
-    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "_parserContentId$global:parserCounter" -NotePropertyValue "[variables('parserContentId$global:parserCounter')]"
+
+    # create object with multiple values in it for a single parser resource
+    $objParserVariables | Add-Member -NotePropertyName "parserVersion$global:parserCounter" -NotePropertyValue $global:parserVersion
+    $objParserVariables | Add-Member -NotePropertyName "parserContentId$global:parserCounter" -NotePropertyValue "$parserContentIdValue"
+
+    $global:baseMainTemplate.variables | Add-Member -NotePropertyName "parserObject$global:parserCounter" -NotePropertyValue $objParserVariables
+
     $global:DependencyCriteria += [PSCustomObject]@{
         kind      = "Parser";
-        contentId = "[variables('_parserContentId$global:parserCounter')]";
-        version   = "[variables('parserVersion$global:parserCounter')]";
+        contentId = "[variables('parserObject$global:parserCounter').parserContentId$global:parserCounter]";
+        version   = "[variables('parserObject$global:parserCounter').parserVersion$global:parserCounter]";
     };
 
     if($contentToImport.TemplateSpec) {
         # Adding the Parser respective TemplateSpec Resources and Active Parser and Metadata Resource
-        addTemplateSpecParserResource $content $yaml $isyaml
+        addTemplateSpecParserResource $content $yaml $isyaml $contentResourceDetails
     }
     else {
         if ($global:parserCounter -eq 1 -and $(queryResourceExists) -and !$contentToImport.TemplateSpec) {
             $baseParserResource = [PSCustomObject] @{
                 type       = "Microsoft.OperationalInsights/workspaces";
-                apiVersion = "2020-08-01";
+                apiVersion = $contentResourceDetails.parserOperationalInsightsWorkspacesApiVersion; #"2020-08-01";
                 name       = "[parameters('workspace')]";
                 location   = "[parameters('workspace-location')]";
                 resources  = @(
@@ -3190,7 +3568,7 @@ function generateParserContent($file, $contentToImport, $contentResourceDetails)
         }
         $parserObj = [PSCustomObject] @{
             type       = "savedSearches";
-            apiVersion = "2020-08-01";
+            apiVersion = $contentResourceDetails.savedSearchesApiVersion; #"2020-08-01";
             name       = "$solutionName Data Parser";
             dependsOn  = @(
                 "[variables('workspace-dependency')]"

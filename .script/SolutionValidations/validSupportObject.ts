@@ -19,22 +19,28 @@ export function IsValidSupportObject(filePath: string): ExitCode {
         let resources = jsonFile.resources;
 
         // filter resources that have type "Microsoft.OperationalInsights/workspaces/providers/metadata"
-        const filteredResource = resources.filter(function (resource: { type: string; }) {
-            return resource.type === "Microsoft.OperationalInsights/workspaces/providers/metadata";
+        const filteredResource = resources.filter(function (resource: { type: string }) {
+            return resource.type === "Microsoft.OperationalInsights/workspaces/providers/metadata" ||
+                resource.type === "Microsoft.OperationalInsights/workspaces/providers/contentPackages";
         });
 
         if (filteredResource.length > 0) {
-            filteredResource.forEach((element: { hasOwnProperty: (arg0: string) => boolean; properties: { hasOwnProperty: (arg0: string) => boolean; support: { hasOwnProperty: (arg0: string) => boolean; name: any; email: any; link: any; }; }; }) => {
+            filteredResource.forEach((element: { hasOwnProperty: (arg0: string) => boolean; properties: { hasOwnProperty: (arg0: string) => boolean; support: { hasOwnProperty: (arg0: string) => boolean; name: any; email: any; link: any; tier: any; }; }; }) => {
                 // check if the resource has a "properties" field
                 if (element.hasOwnProperty("properties") === true) {
+                    
                     // check if the "properties" field has a "support" field
                     if (element.properties.hasOwnProperty("support") === true) {
                         const support = element.properties.support;
-
+                        const validTiers = ["Microsoft", "Partner", "Community"];
                         if (!support.hasOwnProperty("name")) {
                             throw new MainTemplateSupportObjectValidationError(`The support object must have a "name" field.`);
                         } else if (support.name.trim() === "") {
                             throw new MainTemplateSupportObjectValidationError(`The support object "name" field value cannot be empty.`);
+                        } else if (!support.hasOwnProperty("tier")) {
+                            throw new MainTemplateSupportObjectValidationError(`The support object must have a "tier" field.`);
+                        } else if (!validTiers.includes(support.tier)) {
+                            throw new MainTemplateSupportObjectValidationError(`Invalid value for the support "tier" field. Supported values are: Microsoft, Partner, Community.`);
                         } else if ((!support.hasOwnProperty("email") || support.email.trim() === "") && (!support.hasOwnProperty("link") || support.link.trim() === "")) {
                             throw new MainTemplateSupportObjectValidationError(`The support object must have either "email" or "link" field and the value should not be empty.`);
                         } else {
