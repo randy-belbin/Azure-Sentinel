@@ -1,9 +1,9 @@
 <#  
     Title:          SecureID cloud-administration-event-log-api
     Language:       PowerShell
-    Version:        1.0
+    Version:        1.3
     Author:         Sreedhar Ande
-    Last Modified:  6/23/2023
+    Last Modified:  1/26/2024
     Comment:        The Cloud Administration Event Log API is a REST-based web services interface that allows audit log events to be retrieved from the Cloud Authentication Service.
     Note:Above API's resumes getting records from the spot where the previous call left off to avoid duplication of records in RSACloudAdministrationEventLogs_CL Log Analytics Workspace custom tables
 
@@ -151,8 +151,7 @@ Function Build-Signature ($CustomerID, $SharedKey, $Date, $ContentLength, $Metho
 }
 
 # Function to POST the data payload to a Log Analytics workspace
-function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType)
-{
+function Post-LogAnalyticsData($customerId, $sharedKey, $body, $logType) {
     try {
         $TimeStampField = "DateValue"
         $method = "POST";
@@ -246,7 +245,8 @@ function Get-StartTime($CheckpointFile) {
                             }
                         }
             $startTime = [DateTime]::ParseExact($startTime, "yyyy-MM-ddTHH:mm:ss.fffzzz", $null)
-                
+            $dt = Get-Date("$startTime")
+            $startTime = $dt.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")                
             return $startTime
         }
     } catch {
@@ -332,7 +332,7 @@ function Get-RSASecurIDEvent {
             }                   
         } While ($iterations -le $apiResponse.totalPages )
 
-        $endTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")
+        $endTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")        
         if ($responseCode -eq 200) {
             Write-Host "SUCCESS: $($apiResponse.totalElements) records found between $EventStartTime and $endTime and posted to Log Analytics" -ForegroundColor Green
         }
